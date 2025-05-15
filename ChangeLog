@@ -1,3 +1,209 @@
+V1.6.1
+---------
+ * Allow typing double-quote or left parenthesis, brace or square bracket before a selected column.
+ * More intuitive column selection with wrapped lines (although it isn't useful with them).
+ * Special highlighting for standard C++ methods.
+ * Used standard C++ methods instead of `qMax`, `qMin`, `qRound`, …. Also, used `double` instead of `qreal`.
+
+V1.6.0
+---------
+ * Support column selection.
+ * Dropped the support for translating the Help file because it was not practical. An online translation service can be used instead.
+ * Fixed a rare case of finding/highlighting whole words.
+ * Replaced the deprecated method QMouseEvent::pos().
+ * Used localized string for position on the statusbar.
+
+V1.5.2
+---------
+ * Fixed the printing thread. (Previously, it created many instances of the warning message "QBasicTimer::start: Timers cannot be started from another thread" because the document wasn't inside the printing thread.)
+ * Fixed an old issue in replacement highlighting of multiple tabs.
+ * Demand attention under Wayland when a window needs activation, although window managers may ignore it.
+ * Don't escape a start single quote in C/C++ when it follows a letter or number.
+ * Skip double-parenthesis constructs with bash here-docs.
+ * Don't try to save as root when the parent directory doesn't exist.
+ * Respect the enforced syntax of an unsaved document when removing its trailing spaces on saving it.
+ * Check the existence of "gio" before using it for opening URLs.
+ * Fixed the localization of date and time with Qt6.
+
+V1.5.1
+---------
+ * Added a safe and simple workaround for KWin6 under X11.
+ * Under X11, if there is a minimized window on the current desktop, open files as new tabs in it and unminimize it.
+
+V1.5.0
+---------
+ * Removed Qt5 support.
+ * Prevent the cursor position from being changed when files are dropped into the text view.
+ * Support regex replacement with capturing groups. The credit goes to Marco Holmer for suggesting not only this feature but also the way of implementing it.
+ * Enhanced the conversion to start case by including 100,000 characters and also finding the first letter of each word.
+ * Scroll horizontally with mouse wheel inside text view if Alt is pressed and horizontal scrollbar is visible.
+ * Highlight Openbox's "themerc" files (revived by LabWC).
+ * Fixed a rare issue in the geometry of a warning bar animated during window resizing.
+ * Covered a case of here-strings in bash.
+
+V1.4.1
+---------
+ * Added more types to C/C++ syntax highlighting.
+ * To prevent problems on non-Linux systems, don't handle main arguments before calling `QCoreApplication` (Haiku OS may not provide a string argument before `QCoreApplication` is called).
+ * Added an option for a small margin around the text.
+ * Prevented window dragging from the line number strip (which was possible with widget styles like Kvantum).
+ * In Preferences dialog, don't let the mouse wheel focus spin and combo boxes or change their values when they aren't focused.
+ * In Preferences dialog, set the values of spin-boxes to their defaults if they are cleared.
+ * Don't remove single trailing spaces with LaTeX. Also, added more formula keywords to LaTeX.
+ * Fixed showing of the number of selected characters without selection highlighting.
+
+V1.4.0
+---------
+ * Check the view cursor before setting it.
+ * Recognize `text/plain;charset=…` as plain text when pasting (Qt doesn't).
+ * Highlight comments inside formulas with LaTex.
+ * Use icons in the recent files menu where possible.
+ * Prevent tab DND from tab close button.
+ * Focus side-pane with Ctrl+Escape.
+ * Safeguard the file type filters of file dialogs from bad translations.
+ * Added `application/x-zerosize` to the desktop file (after a change in GLib).
+ * Added an option for showing window title on the menubar.
+ * Fixed the tab tooltip for special folders.
+
+V1.3.5
+---------
+ * Used QPointer for TextEdit's highlighter (for a more robust code but without behavior change).
+ * Enabled tab DND under Wayland (by detaching or dropping the tab after finishing the DND) and improved tab DND in general.
+ * Always open a group of files in a single window, even when the app is configured to open files in separate windows.
+ * Prevented total item deselection in the side-pane mode with Qt6.
+ * Added the side-pane and session actions to the toolbar.
+ * Limited the side-pane's default width to 40 times the width of the space character of the widget font.
+
+V1.3.4
+---------
+ * Enable/disable the Paste action of the Edit menu appropriately.
+ * Covered single quote as digit separator in C++(≥14) syntax highlighting.
+ * Initialize variables of "TextEdit" and "TabBar" before events are triggered.
+ * Enabled instant tooltips and corrected context menus on Wayland, by specifying their parent widgets.
+
+V1.3.3
+---------
+ * Fixed crash on pasting with empty clipboard.
+ * Covered tab-indented here-docs in Bash syntax highlighting.
+ * Covered indented here-docs in Perl syntax highlighting.
+ * Silenced the compilation warnings with Qt ≥ 6.4.
+
+V1.3.2
+---------
+ * Added a real Unix signal handler. It was needed to work around a Qt6 bug under Wayland, which reported close signals of Wayland WMs as non-spontaneous (there was no prompt on closing windows by Wayland WMs).
+ * Removed instant tab tooltips when tab DND is disabled (because some Wayland compositors have problem with instant tooltips of inactive windows).
+ * Consider the script sign in Lua.
+ * Fixed the enabled state of the "Other" action in the "Encoding" menu.
+ * Removed the detection of legacy encodings and simplified the "Encoding" menu with Qt6.
+ * Added Toml syntax highlighting.
+ * Reduced the maximum block size of HTML for syntax highlighting to 5000.
+ * Simplified finding of Qt modules with cmake.
+
+V1.3.1
+---------
+ * Used Qt D-Bus for creating a single-instance app (because the lock-file metod failed under harsh circumstances).
+ * Removed the qmake compilation (have no time for it, especially with Qt D-Bus).
+ * Added a workaround for a Qt5 bug that caused a crash if SIGTERM was sent while the replacement dock was visible.
+
+V1.3.0
+---------
+ * Added an option for using system icons where possible. By default, internal icons are used.
+ * Set the scroll mode to per-pixel in the side-pane as a workaround for a bug in QListWidget's auto-scrolling.
+ * With Qt6, accept the close event on receiving SIGTERM and similar signals (because, in Qt6, "qApp->quit()" calls "closeEvent()").
+ * Make sure all windows are deleted when receiving SIGTERM and similar signals.
+ * Made Qt6 font setting backward-compatible.
+ * Fixed the problems in restoring of window size and position.
+ * Added a workaround for a QPlainTextEdit bug that doesn't report a selection change on undoing/redoing.
+ * Fixed the selection highlighting with huge selections.
+ * Fixed a problem in highlighting of Yaml literal blocks.
+ * Center page numbers horizontally when printing.
+ * Highlight cmake's bracket comments and bracket arguments.
+
+V1.2.0
+---------
+ * Covered some details in XML syntax highlighting.
+ * Fixed searching in unusually large documents and also highlighting of their selections (scrolling took a lot of CPU time in some cases). Also, prevented high memory and CPU usages when searching regular expressions in such documents.
+ * Select the text between spaces with Ctrl + double click.
+ * Restore view position on reloading as precisely as possible by using text cursors.
+ * Don't list "theme" and "desktop" in the language menu.
+ * Added Rust syntax highlighting.
+ * Covered multiline double quotes in QML.
+ * With Qt6, hide encodings that are not supported by Qt6.
+ * First try the file manager DBus interface when opening the containing folder.
+ * Removed the action for opening the containing folder when running as root (because there are DBus complications with most file managers).
+ * Bumped the minimum required version of Qt5 to 5.15.0.
+
+V1.1.1
+---------
+ * Fixed highlighting of Markdown's single-line codes with multiple backquotes. Also, faster syntax highlighting for Markdown.
+ * Prevented a rare hang-like behavior with malformed XML documents that have huge lines. Also, followed stricter rules for highlighting of "<" in XML.
+ * Workaround for wrong positions of instant tab tooltips with Qt6.
+
+V1.1.0
+---------
+ * Fixed an issue in saving with UTF-16.
+ * Enabled experimental compilation against Qt6. With cmake, "ENABLE_QT5" should be set to "OFF" (as in `cmake .. -DENABLE_QT5=OFF`) — it's "ON" by default.
+ * Better inclusion of Hunspell.
+ * Added Tcl syntax highlighting.
+ * Increased the maximum number of recent files to 50.
+ * Stretch the text view in the side-pane mode and save the splitter position in pixels (if it should be remembered). Also, ensure that the splitter is visible and its width isn't greater than that of the view on startup.
+ * Consider the special case, where the value of "wheel scroll lines" is zero.
+ * Don't try to restore scrollbar position after reloading because it can't be done precisely. Instead, center the text cursor.
+ * Prevented a very rare stack overflow when matching brackets in huge files, by replacing recursive methods with loops. In this way, extremely distant brackets can be matched instantly.
+ * Fixes and improvements to Lua syntax highlighting, especially regarding comments, (nested) string blocks and speed.
+ * Added lots of keywords for various programming languages.
+ * Fixes and improvements to XML syntax highlighting.
+ * Check the root instance only with the first window.
+
+V1.0.1
+---------
+ * Better inertial scrolling with touchpad and sensitive devices.
+ * Scroll one page per wheel turn when the cursor is on the vertical scrollbar and half the page when Shift is also pressed.
+ * Detect special cases of UTF-16.
+ * Scroll the view up/down by one page without moving text cursor with Ctrl+PageUp/PageDown.
+ * Don't try to save or restore window position under Wayland because, otherwise, menus might appear at wrong positions.
+ * Fixed tab detaching when the window is closed with its last tab.
+
+V1.0.0
+---------
+ * Don't highlight the rest of a JSON document when encountering a huge line (because the formats couldn't be determined).
+ * Refactored the code of syntax highlighting.
+ * Examine final targets of symlinks when detecting programming languages.
+ * Added group separators to the numbers of lines, selected characters and words on the statusbar.
+ * Better property-value pairs in CSS.
+ * Covered "verbatim" in LaTex.
+ * Considered a probable comment after the start of a literal block in Yaml.
+ * Added an option for disabling menubar accelerators.
+ * Added Go syntax highlighting.
+ * AppStream metadata (https://www.freedesktop.org/wiki/Distributions/AppStream/) added by Balló György (City-busz at GitHub).
+ * Handled the case where the start sign of a JavaScript/QML multiline comment was inside a regex.
+ * Fixed an issue in Ruby's regex, highlighted its back quotes and added a very minimal support for its command substitution.
+ * Speed up syntax highlighting by applying the main text format only inside the visible rectangle and also by remembering single quote and back quote.
+ * No need to the window system identifier with tab DND.
+ * Bumped the version to 1.0.0. FeatherPad has been stable for a long time and some users may mistake "0.X.Y" for "unstable".
+
+V0.18.0
+---------
+ * Fixed an old but rare problem in highlighting of multiline comments.
+ * Added Pascal syntax highlighting.
+ * Added Java syntax highlighting.
+ * Better highlighting of numeric literals in some programming languages.
+ * Taken into account some general variables of Perl when highlighting its syntax.
+ * Taken into account the possibility of using unpaired or different paired delimiters for the second part of Perl's replacement operators.
+ * Fixes and improvements to Ruby syntax highlighting.
+ * Prevent Qt from giving any non-plain text to the selection clipboard.
+ * Made PageUp/PageDown select the first/last item of the search history when the search line-edit is focused.
+ * Fixed the lack of Perl-style comments in PHP syntax highlighting.
+ * If needed, save cursor positions when the app is terminated by SIGTERM.
+ * Prevent the spell checker from changing an uneditable document.
+ * Added an icon to the tabs/view-items of files that have targets but aren't symlinks (e.g., their parent directories are symlinks). Also, (1) when a final target exists, two items are added to the tab/view-item context menu for copying its path and opening it, and (2) if a file and some of its targets are opened, only the first one is editable by default.
+ * Added JSON syntax highlighting.
+ * Added "math" and "equation" to LaTex syntax highlighting.
+
+V0.17.2
+---------
+ * Fixed a regression about here-docs in 0.17.0
+
 V0.17.1
 ---------
  * Removed the code for making the cursor busy after 1 second — cursor overriding isn't marked as thread-safe by Qt.

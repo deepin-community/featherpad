@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2019 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2024 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -21,6 +21,8 @@
 //#include <QFileInfo>
 #include <QKeySequence>
 
+#include <cmath>
+
 namespace FeatherPad {
 
 Config::Config():
@@ -29,6 +31,7 @@ Config::Config():
     remSplitterPos_ (true),
     noToolbar_ (false),
     noMenubar_ (false),
+    menubarTitle_ (false),
     hideSearchbar_ (false),
     showStatusbar_ (true),
     showCursorPos_ (false),
@@ -43,6 +46,7 @@ Config::Config():
     syntaxByDefault_ (true),
     showWhiteSpace_ (false),
     showEndings_ (false),
+    textMargin_ (false),
     isMaxed_ (false),
     isFull_ (false),
     darkColScheme_ (false),
@@ -62,6 +66,8 @@ Config::Config():
     pastePaths_ (false),
     closeWithLastTab_ (false),
     sharedSearchHistory_ (false),
+    disableMenubarAccel_ (false),
+    sysIcons_ (false),
     vLineDistance_ (-80),
     tabPosition_ (0),
     maxSHSize_ (2),
@@ -74,7 +80,7 @@ Config::Config():
     winSize_ (QSize (700, 500)),
     startSize_ (QSize (700, 500)),
     winPos_ (QPoint (0, 0)),
-    splitterPos_ (20), // percentage
+    splitterPos_ (150),
     font_ (QFont ("Monospace")),
     recentOpened_ (false),
     saveLastFilesList_ (false),
@@ -120,7 +126,7 @@ void Config::readConfig()
     if (settings.value ("splitterPos") == "none")
         remSplitterPos_ = false; // true by default
     else
-        splitterPos_ = qMin (qMax (settings.value ("splitterPos", 20).toInt(), 0), 100);
+        splitterPos_ = std::max (settings.value ("splitterPos", 150).toInt(), 0);
 
     prefSize_ = settings.value ("prefSize").toSize();
 
@@ -135,6 +141,9 @@ void Config::readConfig()
         noToolbar_ = false;
         noMenubar_ = true;
     }
+
+    if (settings.value ("menubarTitle").toBool())
+        menubarTitle_ = true; // false by default
 
     if (settings.value ("hideSearchbar").toBool())
         hideSearchbar_ = true; // false by default
@@ -175,6 +184,12 @@ void Config::readConfig()
     if (settings.value ("sharedSearchHistory").toBool())
         sharedSearchHistory_ = true; // false by default
 
+    if (settings.value ("disableMenubarAccel").toBool())
+        disableMenubarAccel_ = true; // false by default
+
+    if (settings.value ("sysIcons").toBool())
+        sysIcons_ = true; // false by default
+
     settings.endGroup();
 
     /************
@@ -186,7 +201,7 @@ void Config::readConfig()
     if (settings.value ("font") == "none")
     {
         remFont_ = false; // true by default
-        font_.setPointSize (qMax (QFont().pointSize(), 9));
+        font_.setPointSize (std::max (QFont().pointSize(), 9));
     }
     else
     {
@@ -194,7 +209,7 @@ void Config::readConfig()
         if (!fontStr.isEmpty())
             font_.fromString (fontStr);
         else
-            font_.setPointSize (qMax (QFont().pointSize(), 9));
+            font_.setPointSize (std::max (QFont().pointSize(), 9));
     }
 
     if (settings.value ("noWrap").toBool())
@@ -221,6 +236,9 @@ void Config::readConfig()
     if (settings.value ("showEndings").toBool())
         showEndings_ = true; // false by default
 
+    if (settings.value ("textMargin").toBool())
+        textMargin_ = true; // false by default
+
     if (settings.value ("darkColorScheme").toBool())
         darkColScheme_ = true; // false by default
 
@@ -234,7 +252,7 @@ void Config::readConfig()
         autoSave_ = true; // false by default
 
     int distance = settings.value ("vLineDistance").toInt();
-    if (qAbs (distance) >= 10 && qAbs (distance) < 1000)
+    if (std::abs (distance) >= 10 && std::abs (distance) < 1000)
         vLineDistance_ = distance; // -80 by default
 
     v = settings.value ("skipNonText");
@@ -250,13 +268,13 @@ void Config::readConfig()
     if (settings.value ("pastePaths").toBool())
         pastePaths_ = true; // false by default
 
-    maxSHSize_ = qBound (1, settings.value ("maxSHSize", 2).toInt(), 10);
+    maxSHSize_ = std::clamp (settings.value ("maxSHSize", 2).toInt(), 1, 10);
 
     /* don't let the dark bg be darker than #e6e6e6 */
-    lightBgColorValue_ = qBound (230, settings.value ("lightBgColorValue", 255).toInt(), 255);
+    lightBgColorValue_ = std::clamp (settings.value ("lightBgColorValue", 255).toInt(), 230, 255);
 
     /* don't let the dark bg be lighter than #323232 */
-    darkBgColorValue_ = qBound (0, settings.value ("darkBgColorValue", 15).toInt(), 50);
+    darkBgColorValue_ = std::clamp (settings.value ("darkBgColorValue", 15).toInt(), 0, 50);
 
     dateFormat_ = settings.value ("dateFormat").toString();
 
@@ -271,7 +289,7 @@ void Config::readConfig()
     if (settings.value ("removeTrailingSpaces").toBool())
         removeTrailingSpaces_ = true; // false by default
 
-    recentFilesNumber_ = qBound (0, settings.value ("recentFilesNumber", 10).toInt(), 20);
+    recentFilesNumber_ = std::clamp (settings.value ("recentFilesNumber", 10).toInt(), 0, 50);
     curRecentFilesNumber_ = recentFilesNumber_; // fixed
     recentFiles_ = settings.value ("recentFiles").toStringList();
     recentFiles_.removeAll ("");
@@ -284,9 +302,9 @@ void Config::readConfig()
     if (settings.value ("saveLastFilesList").toBool())
         saveLastFilesList_ = true; // false by default
 
-    autoSaveInterval_ = qBound (1, settings.value ("autoSaveInterval", 1).toInt(), 60);
+    autoSaveInterval_ = std::clamp (settings.value ("autoSaveInterval", 1).toInt(), 1, 60);
 
-    textTabSize_ = qBound (2, settings.value ("textTabSize", 4).toInt(), 10);
+    textTabSize_ = std::clamp (settings.value ("textTabSize", 4).toInt(), 2, 10);
 
     dictPath_ = settings.value ("dictionaryPath").toString();
     spellCheckFromStart_ = settings.value ("spellCheckFromStart").toBool();
@@ -299,7 +317,7 @@ void Config::readConfig()
 void Config::resetFont()
 {
     font_ = QFont ("Monospace");
-    font_.setPointSize (qMax (QFont().pointSize(), 9));
+    font_.setPointSize (std::max (QFont().pointSize(), 9));
 }
 /*************************/
 void Config::readShortcuts()
@@ -351,7 +369,7 @@ void Config::readSyntaxColors()// may be called multiple times
     Settings settingsColors (tmp.fileName(), QSettings::NativeFormat);
 
     settingsColors.beginGroup ("curLineHighlight");
-    curLineHighlight_ = qBound (-1, settingsColors.value ("value", -1).toInt(), 255);
+    curLineHighlight_ = std::clamp (settingsColors.value ("value", -1).toInt(), -1, 255);
     settingsColors.endGroup();
     if (curLineHighlight_ >= 0
         && (darkColScheme_ ? curLineHighlight_ > 70
@@ -376,7 +394,11 @@ void Config::readSyntaxColors()// may be called multiple times
     for (auto &syntax : syntaxes)
     {
         QColor col;
+#if (QT_VERSION >= QT_VERSION_CHECK(6,6,0))
+        col = QColor::fromString (settingsColors.value (syntax).toString());
+#else
         col.setNamedColor (settingsColors.value (syntax).toString());
+#endif
         if (col.isValid())
             col.setAlpha (255); // only opaque custom colors
         if (!col.isValid() || l.contains (col))
@@ -428,6 +450,7 @@ void Config::writeConfig()
     settings.setValue ("startSize", startSize_);
     settings.setValue ("noToolbar", noToolbar_);
     settings.setValue ("noMenubar", noMenubar_);
+    settings.setValue ("menubarTitle", menubarTitle_);
     settings.setValue ("hideSearchbar", hideSearchbar_);
     settings.setValue ("showStatusbar", showStatusbar_);
     settings.setValue ("showCursorPos", showCursorPos_);
@@ -440,6 +463,8 @@ void Config::writeConfig()
     settings.setValue ("nativeDialog", nativeDialog_);
     settings.setValue ("closeWithLastTab", closeWithLastTab_);
     settings.setValue ("sharedSearchHistory", sharedSearchHistory_);
+    settings.setValue ("disableMenubarAccel", disableMenubarAccel_);
+    settings.setValue ("sysIcons", sysIcons_);
 
     settings.endGroup();
 
@@ -462,6 +487,7 @@ void Config::writeConfig()
     settings.setValue ("noSyntaxHighlighting", !syntaxByDefault_);
     settings.setValue ("showWhiteSpace", showWhiteSpace_);
     settings.setValue ("showEndings", showEndings_);
+    settings.setValue ("textMargin", textMargin_);
     settings.setValue ("darkColorScheme", darkColScheme_);
     settings.setValue ("thickCursor", thickCursor_);
     settings.setValue ("inertialScrolling", inertialScrolling_);
@@ -612,7 +638,7 @@ void Config::writeSyntaxColors()
 /*************************/
 void Config::setWhiteSpaceValue (int value)
 {
-    value = qBound (getMinWhiteSpaceValue(), value, getMaxWhiteSpaceValue());
+    value = std::clamp (value, getMinWhiteSpaceValue(), getMaxWhiteSpaceValue());
     QList<QColor> colors;
     colors << (darkColScheme_ ? QColor (Qt::white) : QColor (Qt::black));
     if (!customSyntaxColors_.isEmpty())
@@ -698,7 +724,7 @@ void Config::setDfaultSyntaxColors()
         defaultLightSyntaxColors_.insert ("quote", QColor (Qt::darkGreen));
         defaultLightSyntaxColors_.insert ("type", QColor (Qt::darkMagenta));
         defaultLightSyntaxColors_.insert ("keyWord", QColor (Qt::darkBlue));
-        defaultLightSyntaxColors_.insert ("number", QColor (160, 80, 0));
+        defaultLightSyntaxColors_.insert ("number", QColor (150, 85, 0));
         defaultLightSyntaxColors_.insert ("regex", QColor (150, 0, 0));
         defaultLightSyntaxColors_.insert ("xmlElement", QColor (126, 0, 230));
         defaultLightSyntaxColors_.insert ("cssValue", QColor (0, 110, 110));
@@ -710,7 +736,7 @@ void Config::setDfaultSyntaxColors()
         defaultDarkSyntaxColors_.insert ("quote", QColor (Qt::green));
         defaultDarkSyntaxColors_.insert ("type", QColor (255, 153, 255));
         defaultDarkSyntaxColors_.insert ("keyWord", QColor (65, 154, 255));
-        defaultDarkSyntaxColors_.insert ("number", QColor (255, 200, 0));
+        defaultDarkSyntaxColors_.insert ("number", QColor (255, 205, 0));
         defaultDarkSyntaxColors_.insert ("regex", QColor (255, 160, 0));
         defaultDarkSyntaxColors_.insert ("xmlElement", QColor (255, 255, 1));
         defaultDarkSyntaxColors_.insert ("cssValue", QColor (150, 255, 0));

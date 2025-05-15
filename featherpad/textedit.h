@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2020 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2024 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -20,6 +20,7 @@
 #ifndef TEXTEDIT_H
 #define TEXTEDIT_H
 
+#include <QPointer>
 #include <QPlainTextEdit>
 #include <QUrl>
 #include <QMimeData>
@@ -45,6 +46,8 @@ public:
         /* this is needed for formatTextRect() to be called (for syntax highlighting) */
         emit QPlainTextEdit::updateRequest (rect(), 1);
     }
+
+    bool pastingIsPossible() const;
 
     void setEditorFont (const QFont &f, bool setDefault = true);
     void adjustScrollbars();
@@ -194,6 +197,10 @@ public:
         greenSel_ = sel;
     }
 
+    QList<QTextEdit::ExtraSelection> getColSel() const {
+        return colSel_;
+    }
+
     QList<QTextEdit::ExtraSelection> getRedSel() const {
         return redSel_;
     }
@@ -213,7 +220,7 @@ public:
     }
 
     QSyntaxHighlighter *getHighlighter() const {
-        return highlighter_;
+        return highlighter_.data();
     }
     void setHighlighter (QSyntaxHighlighter *h) {
         highlighter_ = h;
@@ -263,24 +270,48 @@ public:
         pastePaths_ = pastePaths;
     }
 
+    void releaseMouse() {
+        mousePressed_ = false;
+    }
+
+    void removeColumnHighlight();
+
+    int selectionSize() const;
+
     QTextCursor finding (const QString& str, const QTextCursor& start,
                          QTextDocument::FindFlags flags = QTextDocument::FindFlags(),
                          bool isRegex = false, const int end = 0) const;
 
+    /*************************
+     ***** View Position *****
+     *************************/
+    struct viewPosition {
+      int curPos {-1};
+      int topPos {-1};
+      int midPos {-1};
+      int bottomPos {-1};
+    };
+    viewPosition getViewPosition() const;
+    void setViewPostion (const viewPosition vPos);
+
 signals:
     /* inform the main widget */
-    void fileDropped (const QString& localFile,
-                      int restoreCursor, // Only for connecting to FPwin::newTabFromName().
-                      int posInLine, // Only for connecting to FPwin::newTabFromName().
-                      bool multiple); // Multiple files are dropped?
+    void filePasted (const QString& localFile,
+                     int restoreCursor, // Only for connecting to FPwin::newTabFromName().
+                     int posInLine, // Only for connecting to FPwin::newTabFromName().
+                     bool multiple); // Multiple files are dropped?
     void resized(); // needed by syntax highlighting
+    void selChanged(); // needed by a workaround
     void updateRect();
     void zoomedOut (TextEdit *textEdit); // needed for reformatting text
     void updateBracketMatching();
+    void hugeColumn();
+    void canCopy (bool yes);
 
 public slots:
     void copy();
     void cut();
+    void deleteText();
     void undo();
     void redo();
     void paste();
@@ -304,35 +335,11 @@ protected:
     bool event (QEvent *event);
     bool eventFilter (QObject *watched, QEvent *event);
 
+    QMimeData* createMimeDataFromSelection() const;
     /* we want to pass dropping of files to
        the main widget with a custom signal */
-    bool canInsertFromMimeData (const QMimeData* source) const {
-        return source->hasUrls() || QPlainTextEdit::canInsertFromMimeData (source);
-    }
-    void insertFromMimeData (const QMimeData* source) {
-        keepTxtCurHPos_ = false;
-        if (source->hasUrls())
-        {
-            txtCurHPos_ = -1; // Qt bug: cursorPositionChanged() isn't emitted with file dropping
-            const QList<QUrl> urlList = source->urls();
-            bool multiple (urlList.count() > 1);
-            for (const QUrl &url : urlList)
-            {
-                QString file;
-                QString scheme = url.scheme();
-                if (scheme == "admin") // gvfs' "admin:///"
-                    file = url.adjusted (QUrl::NormalizePathSegments).path();
-                else if (scheme == "file" || scheme.isEmpty())
-                    file = url.adjusted (QUrl::NormalizePathSegments)  // KDE may give a double slash
-                              .toLocalFile();
-                else
-                    continue;
-                emit fileDropped (file, 0, 0, multiple);
-            }
-        }
-        else
-            QPlainTextEdit::insertFromMimeData (source);
-    }
+    bool canInsertFromMimeData (const QMimeData* source) const;
+    void insertFromMimeData (const QMimeData* source);
 
 private slots:
     void updateLineNumberAreaWidth (int newBlockCount);
@@ -346,6 +353,13 @@ private:
     QString computeIndentation (const QTextCursor &cur) const;
     QString remainingSpaces (const QString& spaceTab, const QTextCursor& cursor) const;
     QTextCursor backTabCursor(const QTextCursor& cursor, bool twoSpace) const;
+    void makeColumn (const QPoint &endPoint);
+    void highlightColumn (const QTextCursor &endCur, int gap);
+    void prependToColumn (QKeyEvent *event);
+    void copyColumn();
+    void cutColumn();
+    void deleteColumn();
+    void pasteOnColumn();
 
     int prevAnchor_, prevPos_; // used only for bracket matching
     QWidget *lineNumberArea_;
@@ -363,7 +377,7 @@ private:
     QColor lineHColor_;
     int resizeTimerId_, selectionTimerId_; // for not wasting CPU's time
     QPoint pressPoint_; // used internally for hyperlinks
-    QPoint selectionPressPoint_; // used internally to delay dragging until mouse movement
+    bool mousePressed_; // used when removing the column highlight on changing the cursor position
     QFont font_; // used internally for keeping track of the unzoomed font
     QString textTab_; // text tab in terms of spaces
     QElapsedTimer tripleClickTimer_;
@@ -392,13 +406,14 @@ private:
     */
     QList<QTextEdit::ExtraSelection> greenSel_; // for replaced matches
     QList<QTextEdit::ExtraSelection> blueSel_; // for selection highlighting
+    QList<QTextEdit::ExtraSelection> colSel_; // for column selection
     QList<QTextEdit::ExtraSelection> redSel_; // for bracket matching
     bool selectionHighlighting_; // should selections be highlighted?
     bool highlightThisSelection_; // should this selection be highlighted?
     bool removeSelectionHighlights_; // used only internally
     bool matchedBrackets_; // is bracket matching done (is FPwin::matchBrackets called)?
     bool uneditable_; // the doc should be made uneditable because of its contents
-    QSyntaxHighlighter *highlighter_; // syntax highlighter
+    QPointer<QSyntaxHighlighter> highlighter_; // syntax highlighter
     bool saveCursor_;
     bool pastePaths_;
     /******************************
@@ -433,7 +448,7 @@ protected:
     }
 
     void mouseDoubleClickEvent (QMouseEvent *event) {
-        if (rect().contains (event->pos()))
+        if (rect().contains (event->position().toPoint()))
             editor->centerCursor();
         QWidget::mouseDoubleClickEvent (event);
     }

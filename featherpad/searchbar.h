@@ -32,22 +32,17 @@ class ComboBox : public QComboBox
 {
     Q_OBJECT
 public:
-    ComboBox (QWidget *parent = nullptr) :
-        QComboBox (parent), hasPopup_ (false) {}
+    enum Move {NoMove=0 , MoveUp , MoveDown , MoveFirst , MoveLast};
+
+    ComboBox (QWidget *parent = nullptr);
     ~ComboBox() {}
 
-    bool hasPopup() const;
-    void showPopup() override;
-    void hidePopup() override;
-
 signals:
-    void moveInHistory (bool up);
+    void moveInHistory (int move);
 
 protected:
     void keyPressEvent (QKeyEvent *event) override;
-
-private:
-    bool hasPopup_;
+    bool eventFilter (QObject *watched, QEvent *event) override;
 };
 
 class SearchBar : public QFrame
@@ -67,8 +62,6 @@ public:
     bool matchCase() const;
     bool matchWhole() const;
     bool matchRegex() const;
-
-    bool hasPopup() const;
 
     void updateShortcuts (bool disable);
 

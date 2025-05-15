@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2019 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2024 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -27,8 +27,10 @@ void Highlighter::SH_MultiLineQuote (const QString &text)
     int index = 0;
     QRegularExpressionMatch quoteMatch;
     QRegularExpression quoteExpression = mixedQuoteMark;
-    int initialState = currentBlockState();
     int prevState = previousBlockState();
+    /* this tells us whether we are at the start of a here-doc or inside an
+       open quote of a command substitution continued from the previous line */
+    int initialState = currentBlockState();
 
     bool wasDQuoted (prevState == doubleQuoteState
                      || prevState == SH_MixedDoubleQuoteState || prevState == SH_MixedSingleQuoteState);
@@ -39,7 +41,7 @@ void Highlighter::SH_MultiLineQuote (const QString &text)
     {
         prevData = static_cast<TextBlockData *>(prevBlock.userData());
         if (prevData && prevData->getProperty())
-        { // at the end delimiter of a here-doc starting like VAR="$(cat<<EOF
+        { // at the end delimiter of a here-doc started like VAR="$(cat<<EOF
             wasQuoted = wasDQuoted = true;
         }
     }
@@ -74,7 +76,7 @@ void Highlighter::SH_MultiLineQuote (const QString &text)
             if (text.at (index) == quoteMark.pattern().at (0))
                 quoteExpression = quoteMark;
             else
-                quoteExpression.setPattern ("\'");
+                quoteExpression = singleQuoteMark;
         }
     }
     else // but if we're inside a quotation
@@ -84,7 +86,7 @@ void Highlighter::SH_MultiLineQuote (const QString &text)
         if (wasDQuoted)
             quoteExpression = quoteMark;
         else
-            quoteExpression.setPattern ("\'");
+            quoteExpression = singleQuoteMark;
     }
 
     while (index >= 0)
@@ -97,7 +99,7 @@ void Highlighter::SH_MultiLineQuote (const QString &text)
             if (text.at (index) == quoteMark.pattern().at (0))
                 quoteExpression = quoteMark;
             else
-                quoteExpression.setPattern ("\'");
+                quoteExpression = singleQuoteMark;
         }
 
         int endIndex;
@@ -121,10 +123,10 @@ void Highlighter::SH_MultiLineQuote (const QString &text)
             {
                 setCurrentBlockState (quoteExpression == quoteMark
                                                          ? initialState == SH_DoubleQuoteState
-                                                           ? SH_MixedDoubleQuoteState
-                                                           : initialState == SH_SingleQuoteState
-                                                             ? SH_MixedSingleQuoteState
-                                                             : doubleQuoteState
+                                                             ? SH_MixedDoubleQuoteState
+                                                             : initialState == SH_SingleQuoteState
+                                                                 ? SH_MixedSingleQuoteState
+                                                                 : doubleQuoteState
                                                          : singleQuoteState);
             }
             else if (curData->openNests() > 0) // like VAR="$(cat<<EOF
@@ -141,7 +143,7 @@ void Highlighter::SH_MultiLineQuote (const QString &text)
         else
             setFormat (index, quoteLength, altQuoteFormat);
 
-        QString str = text.mid (index, quoteLength);
+        QString str = text.sliced (index, quoteLength);
         int urlIndex = 0;
         QRegularExpressionMatch urlMatch;
         while ((urlIndex = str.indexOf (urlPattern, urlIndex, &urlMatch)) > -1)
@@ -214,10 +216,9 @@ int Highlighter::formatInsideCommand (const QString &text,
                     ++ indx;
                 else
                 {
-                    QRegularExpression singleQuoteExp ("\'");
-                    int end = text.indexOf (singleQuoteExp, indx + 1);
+                    int end = text.indexOf (singleQuoteMark, indx + 1);
                     while (isEscapedQuote (text, end, false))
-                        end = text.indexOf (singleQuoteExp, end + 1);
+                        end = text.indexOf (singleQuoteMark, end + 1);
                     if (end == -1)
                     {
                         setFormat (indx, text.length() - indx, altQuoteFormat);
@@ -407,10 +408,9 @@ bool Highlighter::SH_CmndSubstVar (const QString &text,
         if (prevState == SH_SingleQuoteState
             || prevState == SH_MixedSingleQuoteState)
         {
-            QRegularExpression quoteExpression ("\'");
-            end = text.indexOf (quoteExpression);
+            end = text.indexOf (singleQuoteMark);
             while (isEscapedQuote (text, end, false))
-                end = text.indexOf (quoteExpression, end + 1);
+                end = text.indexOf (singleQuoteMark, end + 1);
             if (end == -1)
             {
                 setFormat (0, text.length(), altQuoteFormat);

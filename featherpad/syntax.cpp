@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2019 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2025 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -24,11 +24,10 @@
 
 namespace FeatherPad {
 
-static QString getMimeType (const QString &fname)
+static QMimeType getMimeType (const QFileInfo &fInfo)
 {
     QMimeDatabase mimeDatabase;
-    QMimeType mimeType = mimeDatabase.mimeTypeForFile (QFileInfo (fname));
-    return mimeType.name();
+    return mimeDatabase.mimeTypeForFile (fInfo);
 }
 /*************************/
 void FPwin::toggleSyntaxHighlighting()
@@ -53,7 +52,7 @@ void FPwin::toggleSyntaxHighlighting()
         QTimer::singleShot (0, this, &FPwin::unbusy);
 }
 /*************************/
-// Never returns an empty string; falls back to "url".
+// Falls back to "url".
 void FPwin::setProgLang (TextEdit *textEdit)
 {
     if (textEdit == nullptr) return;
@@ -61,30 +60,42 @@ void FPwin::setProgLang (TextEdit *textEdit)
     QString fname = textEdit->getFileName();
     if (fname.isEmpty()) return;
 
+    /* examine the (final) target if existing */
+    QFileInfo fInfo (fname);
+    if (fInfo.isSymLink())
+    {
+        const QString finalTarget = fInfo.canonicalFilePath();
+        if (!finalTarget.isEmpty())
+            fname = finalTarget;
+        else
+            fname = fInfo.symLinkTarget();
+    }
+
     if (fname.endsWith (".sub"))
-        return;
+        return; // "url" is the default for TextEdit
 
     QString progLan;
 
-    /* first check some endings */
+    /* first check some endings and names */
+    static const QRegularExpression dotExp ("\\A(?:[^/]*\\.[^/\\.]+)\\z");
     QString baseName = fname.section ('/', -1);
-    QRegularExpressionMatch match = QRegularExpression ("\\A(?:[^/]*\\.[^/\\.]+)\\z").match (baseName);
-    if (match.hasMatch())
+    if (dotExp.match (baseName).hasMatch())
     {
         if (fname.endsWith (".cpp") || fname.endsWith (".h"))
             progLan = "cpp";
         else if (fname.endsWith (".c"))
             progLan = "c";
         else if (fname.endsWith (".sh") || fname.endsWith (".bashrc") || fname.endsWith (".rules")
-                 || baseName == ".bash_profile" || baseName == ".bash_functions"
-                 || baseName == ".xprofile" || baseName == ".profile"
-                 || baseName == ".bash_aliases" || baseName == ".mkshrc"
+                 || fname.endsWith (".zsh") || baseName == ".bash_profile"
+                 || baseName == ".bash_functions" || baseName == ".bash_logout"
+                 || baseName == ".bash_aliases" || baseName == ".xprofile"
+                 || baseName == ".profile" || baseName == ".mkshrc"
                  || baseName == ".zprofile" || baseName == ".zlogin"
                  || baseName == ".zshrc" || baseName == ".zshenv")
             progLan = "sh";
         else if (fname.endsWith (".rb"))
             progLan = "ruby";
-        else if (fname.endsWith (".lua"))
+        else if (fname.endsWith (".lua") || fname.endsWith (".nelua"))
             progLan = "lua";
         else if (fname.endsWith (".py"))
             progLan = "python";
@@ -98,25 +109,32 @@ void FPwin::setProgLang (TextEdit *textEdit)
             progLan = "LaTeX";
         else if (fname.endsWith (".xml", Qt::CaseInsensitive) || fname.endsWith (".svg", Qt::CaseInsensitive) || fname.endsWith (".qrc")
                  || fname.endsWith (".meta4", Qt::CaseInsensitive) || fname.endsWith (".metalink", Qt::CaseInsensitive)
-                 /*|| fname.endsWith (".ui")*/ || fname.endsWith (".rdf") || fname.endsWith (".docbook") || fname.endsWith (".fnx")
+                 || fname.endsWith (".rdf") || fname.endsWith (".docbook") || fname.endsWith (".fnx")
                  || fname.endsWith (".ts") || fname.endsWith (".menu") || fname.endsWith (".kml", Qt::CaseInsensitive)
-                 || fname.endsWith (".xspf", Qt::CaseInsensitive) || fname.endsWith (".asx", Qt::CaseInsensitive))
+                 || fname.endsWith (".xspf", Qt::CaseInsensitive) || fname.endsWith (".asx", Qt::CaseInsensitive)
+                 || fname.endsWith (".nfo") || fname.endsWith (".dae") /* || fname.endsWith (".ui") || fname.endsWith (".xul")*/)
             progLan = "xml";
         else if (fname.endsWith (".css") || fname.endsWith (".qss"))
             progLan = "css";
         else if (fname.endsWith (".scss"))
             progLan = "scss";
+        else if (fname.endsWith (".p") || fname.endsWith (".pas"))
+             progLan = "pascal";
         else if (fname.endsWith (".desktop") || fname.endsWith (".desktop.in") || fname.endsWith (".directory"))
              progLan = "desktop";
         else if (fname.endsWith (".kvconfig")
                  || fname.endsWith (".service") || fname.endsWith (".mount") || fname.endsWith (".timer") // systemd related
-                 || baseName == "sources.list" || baseName == "sources.list.save"
+                 || baseName == "sources.list" || baseName == "sources.list.save" || baseName == "locale.gen"
                  || baseName == "mimeinfo.cache" || baseName == "defaults.list"
                  || baseName == "mimeapps.list" || baseName.endsWith ("-mimeapps.list")
                  || fname.endsWith (".pls", Qt::CaseInsensitive))
              progLan = "config";
         else if (fname.endsWith (".js") || fname.endsWith (".hx"))
             progLan = "javascript";
+        else if (fname.endsWith (".java"))
+            progLan = "java";
+        else if (fname.endsWith (".json"))
+            progLan = "json";
         else if (fname.endsWith (".qml"))
             progLan = "qml";
         else if (fname.endsWith (".log", Qt::CaseInsensitive))
@@ -143,9 +161,18 @@ void FPwin::setProgLang (TextEdit *textEdit)
             progLan = "reST";
         else if (fname.endsWith (".dart"))
             progLan = "dart";
+        else if (fname.endsWith (".go"))
+            progLan = "go";
+        else if (fname.endsWith (".rs"))
+            progLan = "rust";
+        else if (fname.endsWith (".tcl") || fname.endsWith (".tk"))
+            progLan = "tcl";
+        else if (fname.endsWith (".toml"))
+            progLan = "toml";
         else if (baseName.startsWith ("makefile.", Qt::CaseInsensitive) && !baseName.endsWith (".txt", Qt::CaseInsensitive))
             progLan = "makefile";
-        else if (baseName.compare ("CMakeLists.txt", Qt::CaseInsensitive) == 0)
+        else if (baseName.compare ("CMakeLists.txt", Qt::CaseInsensitive) == 0
+                 || baseName.endsWith (".cmake.in", Qt::CaseInsensitive))
             progLan = "cmake";
     }
     else if (baseName == "PKGBUILD" || baseName == "fstab")
@@ -161,19 +188,21 @@ void FPwin::setProgLang (TextEdit *textEdit)
         progLan = "deb";
     else if (baseName == "mirrorlist")
         progLan = "config";
+    else if (baseName == "themerc")
+        progLan = "openbox";
 
-    if (progLan.isEmpty()) // now, check mime types
+    if (progLan.isEmpty()) // now, check the mime type
     {
-        QFileInfo fInfo (fname);
         if (!fInfo.exists())
             progLan = "url"; // fall back to the default language
         else
         {
-            QString mime;
-            if (!fInfo.isSymLink())
-                mime = getMimeType (fname);
-            else
-                mime = getMimeType (fInfo.symLinkTarget());
+            QMimeType mimeType = fInfo.isSymLink() ? getMimeType (QFileInfo (fname)) : getMimeType (fInfo);
+            const QString mime = mimeType.name();
+            QString parentMime;
+            auto parents = mimeType.parentMimeTypes();
+            if (!parents.isEmpty())
+                parentMime = parents.at (0);
 
             if (mime == "text/x-c++" || mime == "text/x-c++src" || mime == "text/x-c++hdr" || mime == "text/x-chdr")
                 progLan = "cpp";
@@ -185,7 +214,7 @@ void FPwin::setProgLang (TextEdit *textEdit)
                 progLan = "ruby";
             else if (mime == "text/x-lua")
                 progLan = "lua";
-            else if (mime.startsWith("text/x-python")) // it may be "text/x-python3"
+            else if (mime.startsWith ("text/x-python")) // it may be "text/x-python3"
                 progLan = "python";
             else if (mime == "application/x-perl")
                 progLan = "perl";
@@ -195,30 +224,33 @@ void FPwin::setProgLang (TextEdit *textEdit)
                 progLan = "cmake";
             else if (mime == "application/vnd.nokia.qt.qmakeprofile")
                 progLan = "qmake";
-            else if (mime == "text/troff")
+            else if (mime == "text/troff" || mime == "application/x-troff-man")
                 progLan = "troff";
             else if (mime == "text/x-tex" || mime == "application/x-lyx")
                 progLan = "LaTeX";
-            else if (mime == "application/xml" || mime == "image/svg+xml" || mime == "application/x-designer"
-                     || mime == "application/metalink4+xml" || mime == "application/metalink+xml"
-                     || mime == "application/x-gtk-builder" || mime == "text/rdf+xml" || mime == "application/rdf+xml"
-                     || mime == "application/x-docbook+xml" || mime == "application/x-xbel" || mime == "text/feathernotes-fnx"
-                     || mime == "text/vnd.trolltech.linguist" || mime == "text/x-opml+xml"
-                     || mime == "application/xspf+xml" || mime == "audio/x-ms-asx"
-                     || mime == "application/vnd.kde.kxmlguirc" || mime == "application/vnd.google-earth.kml+xml" || mime == "application/vnd.kde.kcfg")
+            else if (mime == "text/html" || parentMime == "text/html" || mime == "application/xhtml+xml") // should come before xml check
+                progLan = "html";
+            else if (mime == "application/xml" || parentMime == "application/xml"
+                     || mime == "text/feathernotes-fnx" || mime == "audio/x-ms-asx" || mime == "text/x-nfo" || mime == "application/xml-dtd")
                 progLan = "xml";
             else if (mime == "text/css")
                 progLan = "css";
             else if (mime == "text/x-scss")
                 progLan = "scss";
+            else if (mime == "text/x-pascal")
+                progLan = "pascal";
             else if (mime == "text/x-changelog")
                 progLan = "changelog";
             else if (mime == "application/x-desktop")
                 progLan = "desktop";
             else if (mime == "audio/x-scpls" || mime == "application/vnd.kde.kcfgc")
                 progLan = "config";
-            else if (mime == "application/javascript")
+            else if (mime == "application/javascript" || mime == "text/javascript")
                 progLan = "javascript";
+            else if (mime == "text/x-java")
+                progLan = "java";
+            else if (mime == "application/json" || mime == "application/schema+json")
+                progLan = "json";
             else if (mime == "text/x-qml")
                 progLan = "qml";
             else if (mime == "text/x-log")
@@ -227,18 +259,24 @@ void FPwin::setProgLang (TextEdit *textEdit)
                 progLan = "php";
             else if (mime == "application/x-theme")
                 progLan = "theme";
-            else if (mime == "application/x-yaml")
-                progLan = "yaml";
+            /*else if (mime == "application/x-yaml" || mime == "application/yaml")
+                progLan = "yaml";*/
             else if (mime == "text/x-diff" || mime == "text/x-patch")
                 progLan = "diff";
-            else if (mime == "text/html" || mime == "application/xhtml+xml")
-                progLan = "html";
             else if (mime == "text/markdown")
                 progLan = "markdown";
             else if (mime == "audio/x-mpegurl" || mime == "application/vnd.apple.mpegurl")
                 progLan = "m3u";
-            else if (fname.endsWith (".conf") || fname.endsWith (".ini"))
-                 progLan = "config"; // only if the mime type isn't found
+            else if (mime == "text/x-go")
+                progLan = "go";
+            else if (mime == "text/rust")
+                progLan = "rust";
+            else if (mime == "text/x-tcl" || mime == "text/tcl")
+                progLan = "tcl";
+            else if (mime == "application/toml")
+                progLan = "toml";
+            else if (fname.endsWith (".conf") || fname.endsWith (".ini") || fname.endsWith (".cfg"))
+                progLan = "config"; // only if the mime type isn't found
             else // fall back to the default language
                 progLan = "url";
         }
@@ -338,7 +376,6 @@ void FPwin::syntaxHighlighting (TextEdit *textEdit, bool highlight, const QStrin
         textEdit->setDrawIndetLines (false);
         textEdit->setVLineDistance (0);
 
-        textEdit->setHighlighter (nullptr);
         delete highlighter; highlighter = nullptr;
     }
 }

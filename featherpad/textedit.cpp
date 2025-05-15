@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2019 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2025 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -23,6 +23,7 @@
 #include <QPainter>
 #include <QMenu>
 #include <QDesktopServices>
+#include <QStandardPaths>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QClipboard>
@@ -30,33 +31,14 @@
 #include "textedit.h"
 #include "vscrollbar.h"
 
+#include <algorithm>
+#include <cmath>
+
 #define UPDATE_INTERVAL 50 // in ms
 #define SCROLL_FRAMES_PER_SEC 60
 #define SCROLL_DURATION 300 // in ms
 
 namespace FeatherPad {
-
-#if (QT_VERSION == QT_VERSION_CHECK(5,14,0))
-// To work around a nasty bug in Qt 5.14.0
-static QColor overlayColor (const QColor& bgCol, const QColor& overlayCol)
-{
-    if (!overlayCol.isValid()) return QColor(0,0,0);
-    if (!bgCol.isValid()) return overlayCol;
-
-    qreal a1 = overlayCol.alphaF();
-    if (a1 == 1.0) return overlayCol;
-    qreal a0  = bgCol.alphaF();
-    qreal a = (1.0 - a1) * a0 + a1;
-
-    QColor res;
-    res.setAlphaF(a);
-    res.setRedF (((1.0 - a1) * a0 * bgCol.redF() + a1 * overlayCol.redF()) / a);
-    res.setGreenF (((1.0 - a1) * a0 *bgCol.greenF() + a1 * overlayCol.greenF()) / a);
-    res.setBlueF (((1.0 - a1) * a0 * bgCol.blueF() + a1 * overlayCol.blueF()) / a);
-
-    return res;
-}
-#endif
 
 TextEdit::TextEdit (QWidget *parent, int bgColorValue) : QPlainTextEdit (parent)
 {
@@ -74,6 +56,8 @@ TextEdit::TextEdit (QWidget *parent, int bgColorValue) : QPlainTextEdit (parent)
     inertialScrolling_ = false;
     scrollTimer_ = nullptr;
 
+    mousePressed_ = false;
+
     keepTxtCurHPos_ = false;
     txtCurHPos_ = -1;
 
@@ -81,13 +65,23 @@ TextEdit::TextEdit (QWidget *parent, int bgColorValue) : QPlainTextEdit (parent)
 
     textTab_ = "    "; // the default text tab is four spaces
 
+    resizeTimerId_ = 0;
+    selectionTimerId_ = 0;
+    selectionHighlighting_ = false;
+    highlightThisSelection_ = true;
+    removeSelectionHighlights_ = false;
+    size_ = 0;
+    wordNumber_ = -1; // not calculated yet
+    encoding_= "UTF-8";
+    uneditable_ = false;
+
     setMouseTracking (true);
     //document()->setUseDesignMetrics (true);
 
     /* set the backgound color and ensure enough contrast
        between the selection and line highlight colors */
     QPalette p = palette();
-    bgColorValue = qBound (0, bgColorValue, 255);
+    bgColorValue = std::clamp (bgColorValue, 0, 255);
     if (bgColorValue < 230 && bgColorValue > 50) // not good for a text editor
         bgColorValue = 230;
     if (bgColorValue < 230)
@@ -115,9 +109,9 @@ TextEdit::TextEdit (QWidget *parent, int bgColorValue) : QPlainTextEdit (parent)
             }
         }
         /* Use alpha in paintEvent to gray out the paragraph separators and
-           document terminators. The real text will be formatted by the highlgihter. */
+           document terminators. The real text will be formatted by the highlighter. */
         separatorColor_ = Qt::white;
-        separatorColor_.setAlpha (90 - qRound (3 * static_cast<qreal>(darkValue_) / 5));
+        separatorColor_.setAlpha (95 - std::round (3 * static_cast<double>(darkValue_) / 5));
     }
     else
     {
@@ -144,35 +138,15 @@ TextEdit::TextEdit (QWidget *parent, int bgColorValue) : QPlainTextEdit (parent)
             }
         }
         separatorColor_ = Qt::black;
-        separatorColor_.setAlpha (2 * qRound (static_cast<qreal>(bgColorValue) / 5) - 32);
+        separatorColor_.setAlpha (2 * std::round (static_cast<double>(bgColorValue) / 5) - 32);
     }
     setCurLineHighlight (-1);
 
-#if (QT_VERSION == QT_VERSION_CHECK(5,14,0))
-    separatorColor_ = overlayColor (QColor (bgColorValue, bgColorValue, bgColorValue), separatorColor_);
-#endif
-
-    resizeTimerId_ = 0;
-    selectionTimerId_ = 0;
-    selectionHighlighting_ = false;
-    highlightThisSelection_ = true;
-    removeSelectionHighlights_ = false;
-    size_ = 0;
-    wordNumber_ = -1; // not calculated yet
-    encoding_= "UTF-8";
-    uneditable_ = false;
-    highlighter_ = nullptr;
     setFrameShape (QFrame::NoFrame);
     /* first we replace the widget's vertical scrollbar with ours because
        we want faster wheel scrolling when the mouse cursor is on the scrollbar */
     VScrollBar *vScrollBar = new VScrollBar;
     setVerticalScrollBar (vScrollBar);
-
-#if (QT_VERSION == QT_VERSION_CHECK(5,14,0))
-    /* a (temporary) workaround for Qt's horizontal scrollbar bug */
-    HScrollBar *hScrollBar = new HScrollBar;
-    setHorizontalScrollBar (hScrollBar);
-#endif
 
     lineNumberArea_ = new LineNumberArea (this);
     lineNumberArea_->setToolTip (tr ("Double click to center current line"));
@@ -184,8 +158,15 @@ TextEdit::TextEdit (QWidget *parent, int bgColorValue) : QPlainTextEdit (parent)
         if (!keepTxtCurHPos_)
             txtCurHPos_ = -1; // forget the last cursor position if it shouldn't be remembered
         emit updateBracketMatching();
+        /* also, remove the column highlight if no mouse button is pressed */
+        if (!colSel_.isEmpty() && !mousePressed_)
+            removeColumnHighlight();
     });
     connect (this, &QPlainTextEdit::selectionChanged, this, &TextEdit::onSelectionChanged);
+    connect (this, &QPlainTextEdit::copyAvailable, [this] (bool yes) {
+        if (yes) emit canCopy (true);
+        else if (colSel_.isEmpty()) emit canCopy (false);
+    });
 
     setContextMenuPolicy (Qt::CustomContextMenu);
 }
@@ -199,7 +180,7 @@ void TextEdit::setCurLineHighlight (int value)
     else
     {
         /* a quadratic equation for darkValue_ -> opacity: 0 -> 20,  27 -> 8, 50 -> 2 */
-        int opacity = qBound (1, qRound (static_cast<qreal>(darkValue_ * (19 * darkValue_ - 2813)) / static_cast<qreal>(5175)) + 20, 30);
+        int opacity = std::clamp (static_cast<int>(std::round (static_cast<double>(darkValue_ * (19 * darkValue_ - 2813)) / 5175) + 20), 1, 30);
         lineHColor_ = QColor (255, 255, 255, opacity);
 
     }
@@ -207,13 +188,18 @@ void TextEdit::setCurLineHighlight (int value)
 /*************************/
 bool TextEdit::eventFilter (QObject *watched, QEvent *event)
 {
-    if (watched == lineNumberArea_ && event->type() == QEvent::Wheel)
+    if (watched == lineNumberArea_)
     {
-        if (QWheelEvent *we = static_cast<QWheelEvent*>(event))
+        if (event->type() == QEvent::Wheel)
         {
-            wheelEvent (we);
-            return false;
+            if (QWheelEvent *we = static_cast<QWheelEvent*>(event))
+            {
+                wheelEvent (we);
+                return false;
+            }
         }
+        else if (event->type() == QEvent::MouseButtonPress)
+            return true; // prevent the window from being dragged by widget styles (like Kvantum)
     }
     return QPlainTextEdit::eventFilter (watched, event);
 }
@@ -299,7 +285,7 @@ int TextEdit::lineNumberAreaWidth()
 {
     QString digit = locale().toString (widestDigit_);
     QString num = digit;
-    int max = qMax (1, blockCount());
+    int max = std::max (1, blockCount());
     while (max >= 10)
     {
         max /= 10;
@@ -348,12 +334,7 @@ QString TextEdit::computeIndentation (const QTextCursor &cur) const
 {
     QTextCursor cusror = cur;
     if (cusror.hasSelection())
-    {// this is more intuitive to me
-        if (cusror.anchor() <= cusror.position())
-            cusror.setPosition (cusror.anchor());
-        else
-            cusror.setPosition (cusror.position());
-    }
+        cusror.setPosition (std::min (cusror.anchor(), cusror.position()));
     QTextCursor tmp = cusror;
     tmp.movePosition (QTextCursor::StartOfBlock);
     QString str;
@@ -387,19 +368,19 @@ QString TextEdit::remainingSpaces (const QString& spaceTab, const QTextCursor& c
     QTextCursor tmp = cursor;
     QString txt = cursor.block().text().left (cursor.positionInBlock());
     QFontMetricsF fm = QFontMetricsF (document()->defaultFont());
-    qreal spaceL = fm.horizontalAdvance (" ");
+    double spaceL = fm.horizontalAdvance (" ");
     int n = 0, i = 0;
     while ((i = txt.indexOf("\t", i)) != -1)
     { // find tab widths in terms of spaces
         tmp.setPosition (tmp.block().position() + i);
-        qreal x = static_cast<qreal>(cursorRect (tmp).right());
+        double x = static_cast<double>(cursorRect (tmp).right());
         tmp.setPosition (tmp.position() + 1);
-        x = static_cast<qreal>(cursorRect (tmp).right()) - x;
-        n += qMax (qRound (qAbs (x) / spaceL) - 1, 0); // x is negative for RTL
+        x = static_cast<double>(cursorRect (tmp).right()) - x;
+        n += std::max (static_cast<int>(std::round (std::abs (x) / spaceL)) - 1, 0); // x is negative for RTL
         ++i;
     }
-    n += txt.count();
-    n = spaceTab.count() - n % spaceTab.count();
+    n += txt.size();
+    n = spaceTab.size() - n % spaceTab.size();
     QString res;
     for (int i = 0 ; i < n; ++i)
         res += " ";
@@ -424,22 +405,22 @@ QTextCursor TextEdit::backTabCursor (const QTextCursor& cursor, bool twoSpace) c
 
     QString txt = blockText.left (indx);
     QFontMetricsF fm = QFontMetricsF (document()->defaultFont());
-    qreal spaceL = fm.horizontalAdvance (" ");
+    double spaceL = fm.horizontalAdvance (" ");
     int n = 0, i = 0;
     while ((i = txt.indexOf("\t", i)) != -1)
     { // find tab widths in terms of spaces
         tmp.setPosition (tmp.block().position() + i);
-        qreal x = static_cast<qreal>(cursorRect (tmp).right());
+        double x = static_cast<double>(cursorRect (tmp).right());
         tmp.setPosition (tmp.position() + 1);
-        x = static_cast<qreal>(cursorRect (tmp).right()) - x;
-        n += qMax (qRound (qAbs (x) / spaceL) - 1, 0);
+        x = static_cast<double>(cursorRect (tmp).right()) - x;
+        n += std::max (static_cast<int>(std::round (std::abs (x) / spaceL)) - 1, 0);
         ++i;
     }
-    n += txt.count();
-    n = n % textTab_.count();
-    if (n == 0) n = textTab_.count();
+    n += txt.size();
+    n = n % textTab_.size();
+    if (n == 0) n = textTab_.size();
 
-    if (twoSpace) n = qMin (n, 2);
+    if (twoSpace) n = std::min (n, 2);
 
     tmp.setPosition (txtStart);
     QChar ch = blockText.at (indx - 1);
@@ -447,15 +428,41 @@ QTextCursor TextEdit::backTabCursor (const QTextCursor& cursor, bool twoSpace) c
         tmp.setPosition (txtStart - n, QTextCursor::KeepAnchor);
     else // the previous character is a tab
     {
-        qreal x = static_cast<qreal>(cursorRect (tmp).right());
+        double x = static_cast<double>(cursorRect (tmp).right());
         tmp.setPosition (txtStart - 1, QTextCursor::KeepAnchor);
-        x -= static_cast<qreal>(cursorRect (tmp).right());
-        n -= qRound (qAbs (x) / spaceL);
+        x -= static_cast<double>(cursorRect (tmp).right());
+        n -= std::round (std::abs (x) / spaceL);
         if (n < 0) n = 0; // impossible without "twoSpace"
         tmp.setPosition (tmp.position() - n, QTextCursor::KeepAnchor);
     }
 
     return tmp;
+}
+/*************************/
+/* NOTE: "event->text()" should not be empty when calling this function because using
+         "QPlainTextEdit::keyPressEvent(event)" here can ruin syntax highlighting. */
+void TextEdit::prependToColumn (QKeyEvent *event)
+{
+    if (colSel_.count() > 1000)
+        QTimer::singleShot (0, this, [this]() {emit hugeColumn();});
+    else
+    {
+        bool origMousePressed = mousePressed_;
+        mousePressed_ = true;
+        QTextCursor cur = textCursor();
+        cur.beginEditBlock();
+        for (auto const &extra : std::as_const (colSel_))
+        {
+            if (!extra.cursor.hasSelection()) continue;
+            cur = extra.cursor;
+            cur.setPosition (std::min (cur.anchor(), cur.position()));
+            cur.insertText (event->text());
+            // TODO: overwriteMode() ?
+        }
+        cur.endEditBlock();
+        mousePressed_ = origMousePressed;
+    }
+    event->accept();
 }
 /*************************/
 static inline bool isOnlySpaces (const QString &str)
@@ -474,6 +481,35 @@ static inline bool isOnlySpaces (const QString &str)
 void TextEdit::keyPressEvent (QKeyEvent *event)
 {
     keepTxtCurHPos_ = false;
+
+    /* first, deal with spacial cases of pressing Ctrl */
+    if (event->modifiers() & Qt::ControlModifier)
+    {
+        if (event->modifiers() == Qt::ControlModifier) // no other modifier is pressed
+        {
+            /* deal with hyperlinks */
+            if (event->key() == Qt::Key_Control) // no other key is pressed either
+            {
+                if (highlighter_)
+                {
+                    if (getUrl (cursorForPosition (viewport()->mapFromGlobal (QCursor::pos())).position()).isEmpty())
+                    {
+                        if (viewport()->cursor().shape() != Qt::IBeamCursor)
+                            viewport()->setCursor (Qt::IBeamCursor);
+                    }
+                    else if (viewport()->cursor().shape() != Qt::PointingHandCursor)
+                        viewport()->setCursor (Qt::PointingHandCursor);
+                    QPlainTextEdit::keyPressEvent (event);
+                    return;
+                }
+            }
+        }
+        if (event->key() != Qt::Key_Control) // another modifier/key is pressed
+        {
+            if (highlighter_ && viewport()->cursor().shape() != Qt::IBeamCursor)
+                viewport()->setCursor (Qt::IBeamCursor);
+        }
+    }
 
     /* workarounds for copy/cut/... -- see TextEdit::copy()/cut()/... */
     if (event == QKeySequence::Copy)
@@ -523,57 +559,83 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
         return;
     }
 
-    /* first, deal with spacial cases of pressing Ctrl */
-    if (event->modifiers() & Qt::ControlModifier)
-    {
-        if (event->modifiers() == Qt::ControlModifier) // no other modifier is pressed
-        {
-            /* deal with hyperlinks */
-            if (event->key() == Qt::Key_Control) // no other key is pressed either
-            {
-                if (highlighter_)
-                {
-                    if (getUrl (cursorForPosition (viewport()->mapFromGlobal (QCursor::pos())).position()).isEmpty())
-                        viewport()->setCursor (Qt::IBeamCursor);
-                    else
-                        viewport()->setCursor (Qt::PointingHandCursor);
-                    QPlainTextEdit::keyPressEvent (event);
-                    return;
-                }
-            }
-        }
-        if (event->key() != Qt::Key_Control) // another modifier/key is pressed
-        {
-            if (highlighter_)
-                viewport()->setCursor (Qt::IBeamCursor);
-        }
-    }
-
     if (isReadOnly())
     {
         QPlainTextEdit::keyPressEvent (event);
         return;
     }
 
+    if (event == QKeySequence::Delete || event == QKeySequence::DeleteStartOfWord)
+    {
+        if (!colSel_.isEmpty() && event == QKeySequence::Delete)
+        {
+            deleteColumn();
+            event->accept();
+            return;
+        }
+        bool hadSelection (textCursor().hasSelection());
+        QPlainTextEdit::keyPressEvent (event);
+        if (!hadSelection)
+            emit updateBracketMatching(); // isn't emitted in another way
+        return;
+    }
+
     if (event->key() == Qt::Key_Backspace)
     {
+        if (!colSel_.isEmpty())
+        {
+            keepTxtCurHPos_ = false;
+            txtCurHPos_ = -1;
+            if (colSel_.count() > 1000)
+                QTimer::singleShot (0, this, [this]() {emit hugeColumn();});
+            else
+            {
+                bool origMousePressed = mousePressed_;
+                mousePressed_ = true;
+                QTextCursor cur = textCursor();
+                cur.beginEditBlock();
+                for (auto const &extra : std::as_const (colSel_))
+                {
+                    if (!extra.cursor.hasSelection()) continue;
+                    cur = extra.cursor;
+                    cur.setPosition (std::min (cur.anchor(), cur.position()));
+                    if (cur.columnNumber() == 0)
+                        continue; // don't go to the previous line
+                    cur.movePosition (QTextCursor::PreviousCharacter, QTextCursor::KeepAnchor);
+                    cur.insertText ("");
+                }
+                cur.endEditBlock();
+                mousePressed_ = origMousePressed;
+                if (lineWrapMode() != QPlainTextEdit::NoWrap)
+                { // the selection may have changed with a wrapped text
+                    if (selectionTimerId_)
+                    {
+                        killTimer (selectionTimerId_);
+                        selectionTimerId_ = 0;
+                    }
+                    selectionTimerId_ = startTimer (UPDATE_INTERVAL);
+                }
+            }
+            event->accept();
+            return;
+        }
         keepTxtCurHPos_ = true;
         if (txtCurHPos_ < 0)
         {
             QTextCursor startCur = textCursor();
             startCur.movePosition (QTextCursor::StartOfLine);
-            txtCurHPos_ = qAbs (cursorRect().left() - cursorRect (startCur).left()); // is negative for RTL
+            txtCurHPos_ = std::abs (cursorRect().left() - cursorRect (startCur).left()); // is negative for RTL
         }
-
     }
     else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
     {
+        removeColumnHighlight();
         keepTxtCurHPos_ = true;
         if (txtCurHPos_ < 0)
         {
             QTextCursor startCur = textCursor();
             startCur.movePosition (QTextCursor::StartOfLine);
-            txtCurHPos_ = qAbs (cursorRect().left() - cursorRect (startCur).left());
+            txtCurHPos_ = std::abs (cursorRect().left() - cursorRect (startCur).left());
         }
 
         QTextCursor cur = textCursor();
@@ -802,6 +864,11 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
              || event->key() == Qt::Key_BracketLeft
              || event->key() == Qt::Key_QuoteDbl)
     {
+        if (!colSel_.isEmpty())
+        {
+            prependToColumn (event);
+            return;
+        }
         if (autoBracket_)
         {
             QTextCursor cursor = textCursor();
@@ -865,6 +932,7 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
     }
     else if (event->key() == Qt::Key_Left || event->key() == Qt::Key_Right)
     {
+        mousePressed_ = false; // to remove column highlighting
         /* when text is selected, use arrow keys
            to go to the start or end of the selection */
         QTextCursor cursor = textCursor();
@@ -893,6 +961,7 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
     }
     else if (event->key() == Qt::Key_Down || event->key() == Qt::Key_Up)
     {
+        mousePressed_ = false; // to remove column highlighting
         if (event->modifiers() == Qt::ControlModifier)
         {
             if (QScrollBar* vbar = verticalScrollBar())
@@ -918,9 +987,9 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
             {
                 highlightThisSelection_ = false;
                 cursor.beginEditBlock();
-                cursor.setPosition (qMin (anch, pos));
+                cursor.setPosition (std::min (anch, pos));
                 cursor.movePosition (QTextCursor::StartOfBlock);
-                cursor.setPosition (qMax (anch, pos), QTextCursor::KeepAnchor);
+                cursor.setPosition (std::max (anch, pos), QTextCursor::KeepAnchor);
                 cursor.movePosition (QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
                 QString txt = cursor.selectedText();
                 if (cursor.movePosition (QTextCursor::NextBlock, QTextCursor::KeepAnchor))
@@ -954,9 +1023,9 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
             {
                 highlightThisSelection_ = false;
                 cursor.beginEditBlock();
-                cursor.setPosition (qMax (anch, pos));
+                cursor.setPosition (std::max (anch, pos));
                 cursor.movePosition (QTextCursor::EndOfBlock);
-                cursor.setPosition (qMin (anch, pos), QTextCursor::KeepAnchor);
+                cursor.setPosition (std::min (anch, pos), QTextCursor::KeepAnchor);
                 cursor.movePosition (QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);
                 QString txt = cursor.selectedText();
                 if (cursor.movePosition (QTextCursor::PreviousBlock, QTextCursor::KeepAnchor))
@@ -1005,7 +1074,7 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
             {
                 QTextCursor startCur = cursor;
                 startCur.movePosition (QTextCursor::StartOfLine);
-                hPos = qAbs (cursorRect().left() - cursorRect (startCur).left()); // is negative for RTL
+                hPos = std::abs (cursorRect().left() - cursorRect (startCur).left()); // is negative for RTL
                 txtCurHPos_ = hPos;
             }
             QTextCursor::MoveMode mode = ((event->modifiers() & Qt::ShiftModifier)
@@ -1023,7 +1092,7 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
                                          mode))
                 {
                     setTextCursor (cursor); // WARNING: This is needed because of a Qt bug.
-                    bool rtl (cursor.block().text().isRightToLeft());
+                    bool rtl (cursor.block().textDirection() == Qt::RightToLeft);
                     QPoint cc = cursorRect (cursor).center();
                     cursor.setPosition (cursorForPosition (QPoint (cc.x() + (rtl ? -1 : 1) * hPos, cc.y())).position(), mode);
                 }
@@ -1041,7 +1110,7 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
                 { // next/previous line or block
                     cursor.movePosition (QTextCursor::StartOfLine, mode);
                     setTextCursor (cursor); // WARNING: This is needed because of a Qt bug.
-                    bool rtl (cursor.block().text().isRightToLeft());
+                    bool rtl (cursor.block().textDirection() == Qt::RightToLeft);
                     QPoint cc = cursorRect (cursor).center();
                     cursor.setPosition (cursorForPosition (QPoint (cc.x() + (rtl ? -1 : 1) * hPos, cc.y())).position(), mode);
                 }
@@ -1052,6 +1121,19 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
             return;
         }
     }
+    else if (event->key() == Qt::Key_PageDown || event->key() == Qt::Key_PageUp)
+    {
+        mousePressed_ = false; // to remove column highlighting
+        if (event->modifiers() == Qt::ControlModifier)
+        {
+            if (QScrollBar* vbar = verticalScrollBar())
+            { // scroll without changing the cursor position
+                vbar->setValue(vbar->value() + (event->key() == Qt::Key_PageDown ? 1 : -1) * vbar->pageStep());
+                event->accept();
+                return;
+            }
+        }
+    }
     else if (event->key() == Qt::Key_Tab)
     {
         QTextCursor cursor = textCursor();
@@ -1060,7 +1142,7 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
         {
             highlightThisSelection_ = false;
             cursor.beginEditBlock();
-            cursor.setPosition (qMin (cursor.anchor(), cursor.position())); // go to the first block
+            cursor.setPosition (std::min (cursor.anchor(), cursor.position())); // go to the first block
             cursor.movePosition (QTextCursor::StartOfBlock);
             for (int i = 0; i <= newLines; ++i)
             {
@@ -1087,20 +1169,49 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
         }
         else if (event->modifiers() & Qt::ControlModifier)
         {
+            if (!colSel_.isEmpty())
+            {
+                if (colSel_.count() > 1000)
+                    QTimer::singleShot (0, this, [this]() {emit hugeColumn();});
+                else
+                {
+                    bool origMousePressed = mousePressed_;
+                    mousePressed_ = true;
+                    const QString spaceTab (event->modifiers() & Qt::MetaModifier ? "  " : textTab_);
+                    cursor.beginEditBlock();
+                    for (auto const &extra : std::as_const (colSel_))
+                    {
+                        if (!extra.cursor.hasSelection()) continue;
+                        cursor = extra.cursor;
+                        cursor.setPosition (std::min (cursor.anchor(), cursor.position()));
+                        cursor.insertText (remainingSpaces (spaceTab, cursor));
+                    }
+                    cursor.endEditBlock();
+                    mousePressed_ = origMousePressed;
+                }
+                event->accept();
+                return;
+            }
             QTextCursor tmp (cursor);
-            tmp.setPosition (qMin (tmp.anchor(), tmp.position()));
+            tmp.setPosition (std::min (tmp.anchor(), tmp.position()));
             cursor.insertText (remainingSpaces (event->modifiers() & Qt::MetaModifier
                                                 ? "  " : textTab_, tmp));
             ensureCursorVisible();
             event->accept();
             return;
         }
+        else if (!colSel_.isEmpty())
+        {
+            prependToColumn (event);
+            return;
+        }
     }
     else if (event->key() == Qt::Key_Backtab)
     {
+        removeColumnHighlight();
         QTextCursor cursor = textCursor();
         int newLines = cursor.selectedText().count (QChar (QChar::ParagraphSeparator));
-        cursor.setPosition (qMin (cursor.anchor(), cursor.position()));
+        cursor.setPosition (std::min (cursor.anchor(), cursor.position()));
         highlightThisSelection_ = false;
         cursor.beginEditBlock();
         cursor.movePosition (QTextCursor::StartOfBlock);
@@ -1136,15 +1247,21 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
             return;
         }
     }
-    /* because of a bug in Qt5, the non-breaking space (ZWNJ) may not be inserted with SHIFT+SPACE */
+    /* because of a bug in Qt, the non-breaking space (ZWNJ) may not be inserted with SHIFT+SPACE */
     else if (event->key() == 0x200c)
     {
+        removeColumnHighlight();
         insertPlainText (QChar (0x200C));
         event->accept();
         return;
     }
     else if (event->key() == Qt::Key_Space)
     {
+        if (!colSel_.isEmpty())
+        {
+            prependToColumn (event);
+            return;
+        }
         if (autoReplace_ && event->modifiers() == Qt::NoModifier)
         {
             QTextCursor cur = textCursor();
@@ -1207,6 +1324,7 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
     }
     else if (event->key() == Qt::Key_Home)
     {
+        mousePressed_ = false; // to remove column highlighting
         if (!(event->modifiers() & Qt::ControlModifier))
         { // Qt's default behavior isn't acceptable
             QTextCursor cur = textCursor();
@@ -1230,6 +1348,13 @@ void TextEdit::keyPressEvent (QKeyEvent *event)
             return;
         }
     }
+    else if (event->key() == Qt::Key_End)
+        mousePressed_ = false; // to remove column highlighting
+    else if (!colSel_.isEmpty() && !event->text().isEmpty())
+    {
+        prependToColumn (event);
+        return;
+    }
 
     QPlainTextEdit::keyPressEvent (event);
 }
@@ -1241,6 +1366,8 @@ void TextEdit::copy()
     QTextCursor cursor = textCursor();
     if (cursor.hasSelection())
         QApplication::clipboard()->setText (cursor.selection().toPlainText());
+    else
+        copyColumn();
 }
 void TextEdit::cut()
 {
@@ -1252,18 +1379,35 @@ void TextEdit::cut()
         QApplication::clipboard()->setText (cursor.selection().toPlainText());
         cursor.removeSelectedText();
     }
+    else
+        cutColumn();
+}
+/*************************/
+void TextEdit::deleteText()
+{
+    if (textCursor().hasSelection())
+    {
+        keepTxtCurHPos_ = false;
+        txtCurHPos_ = -1;
+        insertPlainText ("");
+    }
+    else
+        deleteColumn();
 }
 /*************************/
 // These methods are overridden to forget the horizontal position of the text cursor and...
 void TextEdit::undo()
 {
+    removeColumnHighlight();
     /* always remove replacing highlights before undoing */
     setGreenSel (QList<QTextEdit::ExtraSelection>());
     if (getSearchedText().isEmpty()) // FPwin::hlight() won't be called
     {
         QList<QTextEdit::ExtraSelection> es;
-        es.prepend (currentLineSelection());
+        if (!currentLine_.cursor.isNull())
+            es.prepend (currentLine_);
         es.append (blueSel_);
+        es.append (colSel_);
         es.append (redSel_);
         setExtraSelections (es);
     }
@@ -1279,6 +1423,7 @@ void TextEdit::undo()
 }
 void TextEdit::redo()
 {
+    removeColumnHighlight();
     keepTxtCurHPos_ = false;
     txtCurHPos_ = -1;
     QPlainTextEdit::redo();
@@ -1288,37 +1433,15 @@ void TextEdit::redo()
 }
 void TextEdit::paste()
 {
-    keepTxtCurHPos_ = false; // txtCurHPos_ isn't reset because there may be nothing to paste
-    if (pastePaths_)
-    {
-        if (const QMimeData *mimeData = QGuiApplication::clipboard()->mimeData())
-        {
-            const QList<QUrl> urls = mimeData->urls();
-            if (!urls.isEmpty())
-            {
-                bool multiple (urls.size() > 1);
-                QTextCursor cur = textCursor();
-                cur.beginEditBlock();
-                for (const auto &thisUrl : urls)
-                {
-                    /* encode spaces of non-local paths to have a good highlighting
-                       but remove the schemes of local paths */
-                    cur.insertText (thisUrl.isLocalFile() ? thisUrl.toLocalFile()
-                                                          : thisUrl.toString(QUrl::EncodeSpaces));
-                    if (multiple)
-                        cur.insertText ("\n");
-                }
-                cur.endEditBlock();
-                return;
-            }
-        }
-    }
-    QPlainTextEdit::paste();
+    keepTxtCurHPos_ = false; // txtCurHPos_ isn't reset here because there may be nothing to paste
+    if (!colSel_.isEmpty()) pasteOnColumn();
+    else QPlainTextEdit::paste(); // calls insertFromMimeData() in Qt -> "qwidgettextcontrol.cpp"
 }
 void TextEdit::selectAll()
 {
     keepTxtCurHPos_ = false;
     txtCurHPos_ = -1; // Qt bug: cursorPositionChanged() isn't emitted with selectAll()
+    removeColumnHighlight();
     QPlainTextEdit::selectAll();
 }
 void TextEdit::insertPlainText (const QString &text)
@@ -1328,64 +1451,306 @@ void TextEdit::insertPlainText (const QString &text)
     QPlainTextEdit::insertPlainText (text);
 }
 /*************************/
+QMimeData* TextEdit::createMimeDataFromSelection() const
+{
+    /* Prevent a rich text in the selection clipboard when the text
+       is selected by the mouse. Also, see TextEdit::copy()/cut(). */
+    QTextCursor cursor = textCursor();
+    if (cursor.hasSelection())
+    {
+        QMimeData *mimeData = new QMimeData;
+        mimeData->setText (cursor.selection().toPlainText());
+        return mimeData;
+    }
+    return nullptr;
+}
+/*************************/
+static bool containsPlainText (const QStringList &list)
+{
+    for (const auto &str : list)
+    {
+        if (str.compare ("text/plain", Qt::CaseInsensitive) == 0
+            || str.startsWith ("text/plain;charset=", Qt::CaseInsensitive))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+// This should be used, instead of "QPlainTextEdit::canPaste()", to set the
+// enabled state of paste actions (when copied files are going to be pasted)
+// because "canInsertFromMimeData()" is overridden below.
+bool TextEdit::pastingIsPossible() const {
+    if (textInteractionFlags() & Qt::TextEditable)
+    {
+        const QMimeData *md = QGuiApplication::clipboard()->mimeData();
+        return md != nullptr
+               && (md->hasUrls()
+                   || (containsPlainText (md->formats()) && !md->text().isEmpty()));
+    }
+    return false;
+}
+// We want to pass dropping of files to the main widget by not accepting it here.
+// We also want to control whether the pasted URLs should be opened.
+bool TextEdit::canInsertFromMimeData (const QMimeData* source) const
+{
+    return source != nullptr
+           && !source->hasUrls() // let the main widget handle dropped files
+           && containsPlainText (source->formats()) && !source->text().isEmpty();
+}
+void TextEdit::insertFromMimeData (const QMimeData* source)
+{
+    keepTxtCurHPos_ = false;
+    if (source == nullptr) return;
+    if (source->hasUrls())
+    {
+        const QList<QUrl> urlList = source->urls();
+        bool multiple (urlList.count() > 1);
+        if (pastePaths_)
+        {
+            QTextCursor cur = textCursor();
+            cur.beginEditBlock();
+            for (const auto &url : urlList)
+            {
+                /* encode spaces of non-local paths to have a good highlighting
+                   but remove the schemes of local paths */
+                cur.insertText (url.isLocalFile() ? url.toLocalFile()
+                                                  : url.toString (QUrl::EncodeSpaces));
+                if (multiple)
+                    cur.insertText ("\n");
+            }
+            cur.endEditBlock();
+            ensureCursorVisible();
+        }
+        else
+        {
+            txtCurHPos_ = -1; // Qt bug: cursorPositionChanged() isn't emitted with file dropping
+            for (const QUrl &url : urlList)
+            {
+                QString file;
+                QString scheme = url.scheme();
+                if (scheme == "admin") // gvfs' "admin:///"
+                    file = url.adjusted (QUrl::NormalizePathSegments).path();
+                else if (scheme == "file" || scheme.isEmpty())
+                    file = url.adjusted (QUrl::NormalizePathSegments)  // KDE may give a double slash
+                            .toLocalFile();
+                else
+                    continue;
+                emit filePasted (file, 0, 0, multiple);
+            }
+        }
+    }
+    else if (containsPlainText (source->formats()) && !source->text().isEmpty())
+        QPlainTextEdit::insertFromMimeData (source);
+}
+/*************************/
+void TextEdit::copyColumn()
+{
+    QString res;
+    for (auto const &extra : std::as_const (colSel_))
+    {
+        res.append (extra.cursor.selection().toPlainText());
+        res.append ('\n');
+    }
+    if (!res.isEmpty())
+    {
+        res.remove (res.size() - 1, 1);
+        if (!res.isEmpty())
+            QApplication::clipboard()->setText (res);
+    }
+}
+/*************************/
+void TextEdit::cutColumn()
+{
+    if (colSel_.isEmpty()) return;
+    if (colSel_.count() > 1000)
+    {
+        emit hugeColumn();
+        return;
+    }
+    QString res;
+    QTextCursor cur = textCursor();
+    cur.beginEditBlock();
+    for (auto const &extra : std::as_const (colSel_))
+    {
+        res.append (extra.cursor.selectedText());
+        res.append ('\n');
+        if (!extra.cursor.hasSelection()) continue;
+        keepTxtCurHPos_ = false;
+        txtCurHPos_ = -1;
+        cur = extra.cursor;
+        cur.removeSelectedText();
+    }
+    cur.endEditBlock();
+    if (!res.isEmpty())
+    {
+        res.remove (res.size() - 1, 1);
+        if (!res.isEmpty())
+            QApplication::clipboard()->setText (res);
+    }
+    removeColumnHighlight();
+}
+/*************************/
+void TextEdit::deleteColumn()
+{
+    if (colSel_.isEmpty()) return;
+    if (colSel_.count() > 1000)
+    {
+        emit hugeColumn();
+        return;
+    }
+    QTextCursor cur = textCursor();
+    cur.beginEditBlock();
+    for (auto const &extra : std::as_const (colSel_))
+    {
+        if (!extra.cursor.hasSelection()) continue;
+        keepTxtCurHPos_ = false;
+        txtCurHPos_ = -1;
+        cur = extra.cursor;
+        cur.removeSelectedText();
+    }
+    cur.endEditBlock();
+    removeColumnHighlight();
+}
+/*************************/
+void TextEdit::pasteOnColumn()
+{
+    if (colSel_.isEmpty()) return;
+    if (colSel_.count() > 1000)
+    {
+        emit hugeColumn();
+        return;
+    }
+    bool origMousePressed = mousePressed_;
+    mousePressed_ = true;
+    QStringList parts = QApplication::clipboard()->text().split ('\n');
+    QTextCursor cur = textCursor();
+    cur.beginEditBlock();
+    int i = 0;
+    for (auto const &extra : std::as_const (colSel_))
+    {
+        if (i >= parts.size()) break;
+        cur = extra.cursor;
+        cur.insertText (parts.at (i));
+        ++i;
+    }
+    cur.endEditBlock();
+    mousePressed_ = origMousePressed;
+    if (i > 0)
+        keepTxtCurHPos_ = false;
+
+    for (auto const &extra : std::as_const (colSel_))
+    {
+        if (extra.cursor.hasSelection())
+        {
+            if (selectionTimerId_)
+            {
+                killTimer (selectionTimerId_);
+                selectionTimerId_ = 0;
+            }
+            selectionTimerId_ = startTimer (UPDATE_INTERVAL);
+            return;
+        }
+    }
+    removeColumnHighlight();
+}
+/*************************/
 void TextEdit::keyReleaseEvent (QKeyEvent *event)
 {
     /* deal with hyperlinks */
-    if (highlighter_ && event->key() == Qt::Key_Control)
+    if (highlighter_ && event->key() == Qt::Key_Control
+        && viewport()->cursor().shape() != Qt::IBeamCursor)
+    {
         viewport()->setCursor (Qt::IBeamCursor);
+    }
     QPlainTextEdit::keyReleaseEvent (event);
 }
 /*************************/
 void TextEdit::wheelEvent (QWheelEvent *event)
 {
-    if (event->modifiers() & Qt::ControlModifier)
+    QPoint anglePoint = event->angleDelta();
+    if (event->modifiers() == Qt::ControlModifier)
     {
-        float delta = event->angleDelta().y() / 120.f;
+        float delta = anglePoint.y() / 120.f;
         zooming (delta);
         return;
     }
 
-    bool horizontal (event->angleDelta().x() != 0);
-    if (event->modifiers() & Qt::ShiftModifier)
+    bool horizontal (std::abs (anglePoint.x()) > std::abs (anglePoint.y()));
+
+    if ((event->modifiers() & Qt::ShiftModifier) && QApplication::wheelScrollLines() > 1)
     { // line-by-line scrolling when Shift is pressed
-        int delta = horizontal
-                        ? event->angleDelta().x() : event->angleDelta().y();
-#if (QT_VERSION >= QT_VERSION_CHECK(5,15,0))
-        QWheelEvent e (event->position(),
-                       event->globalPosition(),
-#else
-        QWheelEvent e (event->posF(),
-                       event->globalPosF(),
-#endif
-                       event->pixelDelta(),
-#if (QT_VERSION == QT_VERSION_CHECK(5,14,0))
-                       horizontal
-                           ? QPoint (delta / QApplication::wheelScrollLines(), 0)
-                           : QPoint (0, delta / QApplication::wheelScrollLines()),
-#else
-                       QPoint (0, delta / QApplication::wheelScrollLines()),
-#endif
-                       event->buttons(),
-                       Qt::NoModifier,
-                       event->phase(),
-                       false,
-                       event->source());
-        QCoreApplication::sendEvent (horizontal
-                                         ? horizontalScrollBar()
-                                         : verticalScrollBar(), &e);
-        return;
+        QScrollBar *sbar = nullptr;
+        if (horizontal
+            // horizontal scrolling when Alt is also pressed
+            || (event->modifiers() & Qt::AltModifier))
+        {
+            sbar = horizontalScrollBar();
+            if (!horizontal && !(sbar && sbar->isVisible()))
+                sbar = verticalScrollBar();
+        }
+        else
+            sbar = verticalScrollBar();
+        if (sbar && sbar->isVisible())
+        {
+            int delta = horizontal ? anglePoint.x()
+                                   : anglePoint.y();
+            if (std::abs (delta) >= QApplication::wheelScrollLines())
+            {
+                QWheelEvent e (event->position(),
+                               event->globalPosition(),
+                               event->pixelDelta(),
+                               QPoint (0, delta / QApplication::wheelScrollLines()),
+                               event->buttons(),
+                               Qt::NoModifier,
+                               event->phase(),
+                               false,
+                               event->source());
+                QCoreApplication::sendEvent (sbar, &e);
+            }
+            return;
+        }
+    }
+
+    if ((event->modifiers() & Qt::AltModifier) && !horizontal)
+    { // horizontal scrolling when Alt is pressed
+        QScrollBar *hbar = horizontalScrollBar();
+        if (hbar && hbar->isVisible())
+        {
+            QWheelEvent e (event->position(),
+                           event->globalPosition(),
+                           event->pixelDelta(),
+                           QPoint (0, anglePoint.y()),
+                           event->buttons(),
+                           Qt::NoModifier,
+                           event->phase(),
+                           false,
+                           event->source());
+            QCoreApplication::sendEvent (hbar, &e);
+            return;
+        }
     }
 
     /* inertial scrolling */
-    if (inertialScrolling_
+    if (inertialScrolling_ && QApplication::wheelScrollLines() > 0
         && event->spontaneous()
         && !horizontal
         && event->source() == Qt::MouseEventNotSynthesized)
     {
-        if (QScrollBar* vbar = verticalScrollBar())
+        QScrollBar *vbar = verticalScrollBar();
+        if (vbar && vbar->isVisible())
         {
-            /* always set the initial speed to 3 lines per wheel turn */
-            int delta = event->angleDelta().y() * 3 / QApplication::wheelScrollLines();
+            int delta = anglePoint.y();
+            /* with mouse, always set the initial speed to 3 lines per wheel turn;
+               with more sensitive devices, set it to one line */
+            if (std::abs (delta) >= 120)
+            {
+                if (std::abs (delta * 3) >= QApplication::wheelScrollLines())
+                    delta = delta * 3 / QApplication::wheelScrollLines();
+            }
+            else if (std::abs (delta) >= QApplication::wheelScrollLines())
+                delta = delta / QApplication::wheelScrollLines();
+
             if((delta > 0 && vbar->value() == vbar->minimum())
                || (delta < 0 && vbar->value() == vbar->maximum()))
             {
@@ -1397,12 +1762,20 @@ void TextEdit::wheelEvent (QWheelEvent *event)
             wheelEvents << QDateTime::currentMSecsSinceEpoch();
             while (wheelEvents.last() - wheelEvents.first() > 500)
                 wheelEvents.removeFirst();
-            int fps = qMax (SCROLL_FRAMES_PER_SEC / wheelEvents.size(), 5);
+            int steps = std::max (SCROLL_FRAMES_PER_SEC / static_cast<int>(wheelEvents.size()), 5)
+                        * SCROLL_DURATION / 1000;
+
+            /* wait until the angle delta reaches an acceptable value */
+            static int _delta = 0;
+            _delta += delta;
+            if (std::abs (_delta) < steps)
+                return;
 
             /* set the data for inertial scrolling */
             scrollData data;
-            data.delta = delta;
-            data.totalSteps = data.leftSteps = fps * SCROLL_DURATION / 1000;
+            data.delta = _delta;
+            _delta = 0;
+            data.totalSteps = data.leftSteps = steps;
             queuedScrollSteps_.append (data);
             if (!scrollTimer_)
             {
@@ -1410,7 +1783,8 @@ void TextEdit::wheelEvent (QWheelEvent *event)
                 scrollTimer_->setTimerType (Qt::PreciseTimer);
                 connect (scrollTimer_, &QTimer::timeout, this, &TextEdit::scrollWithInertia);
             }
-            scrollTimer_->start (1000 / SCROLL_FRAMES_PER_SEC);
+            if (!scrollTimer_->isActive())
+                scrollTimer_->start (1000 / SCROLL_FRAMES_PER_SEC);
             return;
         }
     }
@@ -1422,12 +1796,18 @@ void TextEdit::wheelEvent (QWheelEvent *event)
 /*************************/
 void TextEdit::scrollWithInertia()
 {
-    if (!verticalScrollBar()) return;
+    QScrollBar *vbar = verticalScrollBar();
+    if (!vbar || !vbar->isVisible())
+    {
+        queuedScrollSteps_.clear();
+        scrollTimer_->stop();
+        return;
+    }
 
     int totalDelta = 0;
     for (QList<scrollData>::iterator it = queuedScrollSteps_.begin(); it != queuedScrollSteps_.end(); ++it)
     {
-        totalDelta += qRound (static_cast<qreal>(it->delta) / static_cast<qreal>(it->totalSteps));
+        totalDelta += std::round (static_cast<double>(it->delta) / it->totalSteps);
         -- it->leftSteps;
     }
     /* only remove the first queue to simulate an inertia */
@@ -1444,15 +1824,18 @@ void TextEdit::scrollWithInertia()
         else break;
     }
 
-    QWheelEvent e (QPointF(),
-                   QPointF(),
-                   QPoint(),
-                   QPoint (0, totalDelta),
-                   Qt::NoButton,
-                   Qt::NoModifier,
-                   Qt::NoScrollPhase,
-                   false);
-    QCoreApplication::sendEvent (verticalScrollBar(), &e);
+    if (totalDelta != 0)
+    {
+        QWheelEvent e (QPointF(),
+                       QPointF(),
+                       QPoint(),
+                       QPoint (0, totalDelta),
+                       Qt::NoButton,
+                       Qt::NoModifier,
+                       Qt::NoScrollPhase,
+                       false);
+        QCoreApplication::sendEvent (vbar, &e);
+    }
 
     if (queuedScrollSteps_.empty())
         scrollTimer_->stop();
@@ -1463,8 +1846,14 @@ void TextEdit::resizeEvent (QResizeEvent *event)
     QPlainTextEdit::resizeEvent (event);
 
     QRect cr = contentsRect();
-    lineNumberArea_->setGeometry (QRect (QApplication::layoutDirection() == Qt::RightToLeft ? cr.width() - lineNumberAreaWidth() : cr.left(),
-                                         cr.top(), lineNumberAreaWidth(), cr.height()));
+    int lw = lineNumberAreaWidth();
+    lineNumberArea_->setGeometry (QRect (QApplication::layoutDirection() == Qt::RightToLeft
+                                             ? cr.width() - lw : cr.left(),
+                                         cr.top(),
+                                         lw, cr.height()));
+
+    if (lineWrapMode() != QPlainTextEdit::NoWrap)
+        removeColumnHighlight();
 
     if (resizeTimerId_)
     {
@@ -1489,11 +1878,12 @@ void TextEdit::timerEvent (QTimerEvent *event)
         killTimer (event->timerId());
         selectionTimerId_ = 0;
         selectionHlight();
+        emit selChanged();
     }
 }
-/*******************************************************
-***** Workaround for the RTL bug in QPlainTextEdit *****
-********************************************************/
+/**********************
+***** Paint event *****
+***********************/
 static void fillBackground (QPainter *p, const QRectF &rect, QBrush brush, const QRectF &gradientRect = QRectF())
 {
     p->save();
@@ -1513,9 +1903,8 @@ static void fillBackground (QPainter *p, const QRectF &rect, QBrush brush, const
     p->restore();
 }
 
-// Exactly like QPlainTextEdit::paintEvent(),
-// except for setting layout text option for RTL
-// and drawing vertical indentation lines (if needed).
+// Changes are made to QPlainTextEdit::paintEvent() for setting the
+// RTL layout text option, drawing vertical indentation lines, etc.
 void TextEdit::paintEvent (QPaintEvent *event)
 {
     QPainter painter (viewport());
@@ -1525,12 +1914,12 @@ void TextEdit::paintEvent (QPaintEvent *event)
 
     QRect er = event->rect();
     QRect viewportRect = viewport()->rect();
-    qreal maximumWidth = document()->documentLayout()->documentSize().width();
+    double maximumWidth = document()->documentLayout()->documentSize().width();
     painter.setBrushOrigin (offset);
 
-    int maxX = static_cast<int>(offset.x() + qMax (static_cast<qreal>(viewportRect.width()), maximumWidth)
+    int maxX = static_cast<int>(offset.x() + std::max (static_cast<double>(viewportRect.width()), maximumWidth)
                                 - document()->documentMargin());
-    er.setRight (qMin (er.right(), maxX));
+    er.setRight (std::min (er.right(), maxX));
     painter.setClipRect (er);
 
     bool editable = !isReadOnly();
@@ -1550,8 +1939,8 @@ void TextEdit::paintEvent (QPaintEvent *event)
 
         if (r.bottom() >= er.top() && r.top() <= er.bottom())
         {
-            /* take care of RTL */
-            bool rtl (block.text().isRightToLeft());
+            /* take care of RTL (workaround for the RTL bug in QPlainTextEdit) */
+            bool rtl (block.textDirection() == Qt::RightToLeft);
             QTextOption opt = document()->defaultTextOption();
             if (rtl)
             {
@@ -1566,7 +1955,7 @@ void TextEdit::paintEvent (QPaintEvent *event)
             if (bg != Qt::NoBrush)
             {
                 QRectF contentsRect = r;
-                contentsRect.setWidth (qMax (r.width(), maximumWidth));
+                contentsRect.setWidth (std::max (r.width(), maximumWidth));
                 fillBackground (&painter, contentsRect, bg);
             }
 
@@ -1575,7 +1964,7 @@ void TextEdit::paintEvent (QPaintEvent *event)
                 /* "QTextFormat::FullWidthSelection" isn't respected when new-lines are shown.
                    This is a workaround. */
                 QRectF contentsRect = r;
-                contentsRect.setWidth (qMax (r.width(), maximumWidth));
+                contentsRect.setWidth (std::max (r.width(), maximumWidth));
                 if (contentsRect.contains (cursorRect().center()))
                 {
                     contentsRect.setTop (cursorRect().top());
@@ -1584,7 +1973,7 @@ void TextEdit::paintEvent (QPaintEvent *event)
                 }
             }
 
-            QVector<QTextLayout::FormatRange> selections;
+            QList<QTextLayout::FormatRange> selections;
             int blpos = block.position();
             int bllen = block.length();
             for (int i = 0; i < context.selections.size(); ++i)
@@ -1688,30 +2077,30 @@ void TextEdit::paintEvent (QPaintEvent *event)
                     QTextCursor cur = textCursor();
                     cur.setPosition (match.capturedLength() + block.position());
                     QFontMetricsF fm = QFontMetricsF (document()->defaultFont());
-                    int yTop = qRound (r.topLeft().y());
-                    int yBottom =  qRound (r.height() >= static_cast<qreal>(2) * fm.lineSpacing()
+                    int yTop = std::round (r.topLeft().y());
+                    int yBottom =  std::round (r.height() >= static_cast<double>(2) * fm.lineSpacing()
                                                ? yTop + fm.height()
-                                               : r.bottomLeft().y() - static_cast<qreal>(1));
-                    qreal tabWidth = fm.horizontalAdvance (textTab_);
+                                               : r.bottomLeft().y() - static_cast<double>(1));
+                    double tabWidth = fm.horizontalAdvance (textTab_);
                     if (rtl)
                     {
-                        qreal leftMost = cursorRect (cur).left();
-                        qreal x = r.topRight().x();
+                        double leftMost = cursorRect (cur).left();
+                        double x = r.topRight().x();
                         x -= tabWidth;
                         while (x >= leftMost)
                         {
-                            painter.drawLine (QLine (qRound (x), yTop, qRound (x), yBottom));
+                            painter.drawLine (QLine (std::round (x), yTop, std::round (x), yBottom));
                             x -= tabWidth;
                         }
                     }
                     else
                     {
-                        qreal rightMost = cursorRect (cur).right();
-                        qreal x = r.topLeft().x();
+                        double rightMost = cursorRect (cur).right();
+                        double x = r.topLeft().x();
                         x += tabWidth;
                         while (x <= rightMost)
                         {
-                            painter.drawLine (QLine (qRound (x), yTop, qRound (x), yBottom));
+                            painter.drawLine (QLine (std::round (x), yTop, std::round (x), yBottom));
                             x += tabWidth;
                         }
                     }
@@ -1737,17 +2126,17 @@ void TextEdit::paintEvent (QPaintEvent *event)
                 QTextCursor cur = textCursor();
                 cur.setPosition (block.position());
                 QFontMetricsF fm = QFontMetricsF (document()->defaultFont());
-                qreal rulerSpace = fm.horizontalAdvance (' ') * static_cast<qreal>(vLineDistance_);
-                int yTop = qRound (r.topLeft().y());
-                int yBottom =  qRound (r.height() >= static_cast<qreal>(2) * fm.lineSpacing()
-                                       ? yTop + fm.height()
-                                       : r.bottomLeft().y() - static_cast<qreal>(1));
-                qreal rightMost = er.right();
-                qreal x = static_cast<qreal>(cursorRect (cur).right());
+                double rulerSpace = fm.horizontalAdvance (' ') * static_cast<double>(vLineDistance_);
+                int yTop = std::round (r.topLeft().y());
+                int yBottom =  std::round (r.height() >= static_cast<double>(2) * fm.lineSpacing()
+                                           ? yTop + fm.height()
+                                           : r.bottomLeft().y() - static_cast<double>(1));
+                double rightMost = er.right();
+                double x = static_cast<double>(cursorRect (cur).right());
                 x += rulerSpace;
                 while (x <= rightMost)
                 {
-                    painter.drawLine (QLine (qRound (x), yTop, qRound (x), yBottom));
+                    painter.drawLine (QLine (std::round (x), yTop, std::round (x), yBottom));
                     x += rulerSpace;
                 }
                 painter.restore();
@@ -1766,9 +2155,9 @@ void TextEdit::paintEvent (QPaintEvent *event)
         painter.fillRect (QRect (QPoint (static_cast<int>(er.left()), static_cast<int>(offset.y())), er.bottomRight()), palette().window());
     }
 }
-/************************************************
-***** End of the Workaround for the RTL bug *****
-*************************************************/
+/*********************************
+***** End of the paint event *****
+**********************************/
 
 void TextEdit::highlightCurrentLine()
 {
@@ -1835,23 +2224,28 @@ void TextEdit::lineNumberAreaPaintEvent (QPaintEvent *event)
                 lastCurrentLine_ = QRect (0, top, 1, top + h);
 
                 painter.save();
-                int cur = cursorRect().center().y();
                 painter.setFont (bf);
                 painter.setPen (currentLineFg);
-                painter.fillRect (0, cur - h / 2, w, h, currentLineBg);
                 QTextCursor tmp = textCursor();
                 tmp.movePosition (QTextCursor::StartOfLine, QTextCursor::MoveAnchor);
-                if (!tmp.atBlockStart())
+                if (tmp.atBlockStart())
+                    painter.fillRect (0, top, w, h, currentLineBg);
+                else
                 {
+                    int cur = cursorRect().center().y();
+                    painter.fillRect (0, cur - h / 2, w, h, currentLineBg);
                     painter.drawText (left, cur - h / 2, w - 3, h,
                                       Qt::AlignRight, rtl ? "↲" : "↳");
                     painter.setPen (currentBlockFg);
-                    if (tmp.movePosition (QTextCursor::Up, QTextCursor::MoveAnchor) // always true
-                        && !tmp.atBlockStart())
+                    if (tmp.movePosition (QTextCursor::Up, QTextCursor::MoveAnchor)) // always true
                     {
-                        cur = cursorRect (tmp).center().y();
-                        painter.drawText (left, cur - h / 2, w - 3, h,
-                                          Qt::AlignRight, number);
+                        tmp.movePosition (QTextCursor::StartOfLine, QTextCursor::MoveAnchor);
+                        if (!tmp.atBlockStart())
+                        {
+                            cur = cursorRect (tmp).center().y();
+                            painter.drawText (left, cur - h / 2, w - 3, h,
+                                              Qt::AlignRight, number);
+                        }
                     }
                 }
             }
@@ -1909,6 +2303,13 @@ void TextEdit::onSelectionChanged()
         prevPos_ = cur.position();
     }
 
+    if (selectionTimerId_)
+    {
+        killTimer (selectionTimerId_);
+        selectionTimerId_ = 0;
+    }
+    selectionTimerId_ = startTimer (UPDATE_INTERVAL);
+
     /* selection highlighting */
     if (!selectionHighlighting_) return;
     if (highlightThisSelection_)
@@ -1918,12 +2319,6 @@ void TextEdit::onSelectionChanged()
         removeSelectionHighlights_ = true;
         highlightThisSelection_ = true; // reset
     }
-    if (selectionTimerId_)
-    {
-        killTimer (selectionTimerId_);
-        selectionTimerId_ = 0;
-    }
-    selectionTimerId_ = startTimer (UPDATE_INTERVAL);
 }
 /*************************/
 void TextEdit::zooming (float range)
@@ -1943,7 +2338,7 @@ void TextEdit::zooming (float range)
     {
         const float newSize = static_cast<float>(f.pointSizeF()) + range;
         if (newSize <= 0) return;
-        f.setPointSizeF (static_cast<qreal>(newSize));
+        f.setPointSizeF (static_cast<double>(newSize));
         setEditorFont (f, false);
 
         /* if this is a zoom-out, the text will need
@@ -1979,9 +2374,9 @@ void TextEdit::sortLines (bool reverse)
     int anch = cursor.anchor();
     int pos = cursor.position();
     cursor.beginEditBlock();
-    cursor.setPosition (qMin (anch, pos));
+    cursor.setPosition (std::min (anch, pos));
     cursor.movePosition (QTextCursor::StartOfBlock);
-    cursor.setPosition (qMax (anch, pos), QTextCursor::KeepAnchor);
+    cursor.setPosition (std::max (anch, pos), QTextCursor::KeepAnchor);
     cursor.movePosition (QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
 
     QStringList lines = cursor.selectedText().split (QChar (QChar::ParagraphSeparator));
@@ -2022,7 +2417,7 @@ QString TextEdit::getUrl (const int pos) const
     QString url;
     QTextBlock block = document()->findBlock (pos);
     QString text = block.text();
-    if (text.length() <= 10000) // otherwise, too long
+    if (text.length() <= 30000) // otherwise, too long
     {
         int cursorIndex = pos - block.position();
         QRegularExpressionMatch match;
@@ -2037,27 +2432,283 @@ QString TextEdit::getUrl (const int pos) const
     return url;
 }
 /*************************/
+void TextEdit::highlightColumn (const QTextCursor &endCur, int gap)
+{
+    /* just a precaution */
+    bool selectionHighlightingOrig = selectionHighlighting_;
+    selectionHighlighting_ = false;
+
+    QTextCursor cur = textCursor();
+    if (cur.hasSelection())
+    {
+        cur.setPosition (cur.position());
+        setTextCursor (cur);
+    }
+
+    int startIndent = cur.columnNumber();
+    int endIndent = endCur.columnNumber() + gap;
+
+    int hDistance = std::abs (endIndent - startIndent);
+    int minIndent = std::min (startIndent, endIndent);
+
+    QTextCursor tlCur; // top left cursor (with LTR)
+    QTextCursor limitCur; // the cursor that sets the loop limit
+    if (cur < endCur)
+    {
+        tlCur = cur;
+        limitCur = endCur;
+        if (startIndent > endIndent)
+            tlCur.setPosition (tlCur.position() - (startIndent - endIndent));
+    }
+    else
+    {
+        tlCur = endCur;
+        limitCur = cur;
+        if (endIndent > startIndent)
+            tlCur.setPosition (tlCur.position() - std::max (tlCur.columnNumber() - startIndent, 0));
+    }
+    int colNum = limitCur.columnNumber();
+    if (limitCur.movePosition (QTextCursor::EndOfLine))
+    {
+        /* This and similar checks in the main loop below are for wrapped lines,
+           although column selection is not useful when lines are wrapped. */
+        if (limitCur.columnNumber() <= colNum)
+            limitCur.movePosition (QTextCursor::PreviousCharacter);
+    }
+
+    QList<QTextEdit::ExtraSelection> es = extraSelections();
+    int n = colSel_.count() + redSel_.count();
+    while (n > 0 && !es.isEmpty())
+    {
+        es.removeLast();
+        --n;
+    }
+    colSel_.clear();
+
+    QTextEdit::ExtraSelection extra;
+    extra.format.setBackground (palette().highlight().color());
+    extra.format.setForeground (palette().highlightedText().color());
+
+    bool empty (true);
+    int i = 0;
+    QTextCursor tmp;
+    while (tlCur <= limitCur)
+    {
+        ++i;
+        if (i > 1000)
+        {
+            emit hugeColumn();
+            break;
+        }
+
+        cur.setPosition (tlCur.position());
+        tmp = cur;
+        if (tmp.movePosition (QTextCursor::EndOfLine))
+        {
+            if (tmp.columnNumber() <= cur.columnNumber() && tmp.position() == cur.position() + 1)
+                tmp.movePosition (QTextCursor::PreviousCharacter);
+        }
+        cur.setPosition (std::min (cur.position() + hDistance, tmp.position()), QTextCursor::KeepAnchor);
+        if (empty && cur.hasSelection())
+            empty = false;
+
+        extra.cursor = cur;
+        colSel_.append (extra);
+
+        /* WARNING: QTextCursor::movePosition(QTextCursor::Down) can be a mess with RTL. */
+        //tlCur.movePosition (QTextCursor::StartOfLine);
+        //if (!tlCur.movePosition (QTextCursor::Down))
+        //    break;
+        colNum = tlCur.columnNumber();
+        if (tlCur.movePosition (QTextCursor::EndOfLine))
+        {
+            if (tlCur.columnNumber() > colNum)
+            {
+                if (!tlCur.movePosition (QTextCursor::NextCharacter))
+                    break;
+            }
+        }
+        else if (!tlCur.movePosition (QTextCursor::NextCharacter))
+            break;
+        tmp = tlCur;
+        if (tmp.movePosition (QTextCursor::EndOfLine))
+        {
+            if (tmp.columnNumber() <= tlCur.columnNumber())
+                tmp.movePosition (QTextCursor::PreviousCharacter);
+        }
+        tlCur.setPosition (std::min (tlCur.position() + minIndent, tmp.position()));
+    }
+
+    if (empty) // no row has text
+        colSel_.clear();
+    else
+        es.append (colSel_);
+
+    es.append (redSel_);
+    setExtraSelections (es);
+
+    selectionHighlighting_ = selectionHighlightingOrig;
+
+    if (!colSel_.isEmpty()) emit canCopy (true);
+
+    if (selectionTimerId_)
+    {
+        killTimer (selectionTimerId_);
+        selectionTimerId_ = 0;
+    }
+    selectionTimerId_ = startTimer (UPDATE_INTERVAL);
+}
+/*************************/
+void TextEdit::makeColumn (const QPoint &endPoint)
+{
+    /* limit the position to the viewport */
+    QPoint p (std::clamp (endPoint.x(), 0, viewport()->width()),
+              std::clamp (endPoint.y(), 0, viewport()->height()));
+    QTextCursor endCur = cursorForPosition (p);
+    QRect cRect (cursorRect (endCur));
+    bool rtl (endCur.block().textDirection() == Qt::RightToLeft);
+    if (rtl)
+    { // a workaround for an RTL problem of Qt
+        if (p.y() <= cRect.top())
+        {
+            QTextCursor tmp = endCur;
+            if (tmp.movePosition (QTextCursor::StartOfLine)
+                && tmp.movePosition (QTextCursor::PreviousCharacter)
+                && tmp.blockNumber() == endCur.blockNumber())
+            {
+                endCur = tmp;
+                cRect = cursorRect (endCur);
+            }
+        }
+        else if (p.y() > cRect.bottom())
+        {
+            QTextCursor tmp = endCur;
+            if (tmp.movePosition (QTextCursor::NextCharacter)
+                && tmp.blockNumber() == endCur.blockNumber())
+            {
+                endCur = tmp;
+                cRect = cursorRect (endCur);
+            }
+        }
+    }
+    int extraGap = 0;
+    if (p.y() <= cRect.top())
+    {
+        if (rtl ? p.x() <= cRect.right() + 1 : p.x() >= cRect.left())
+        { // if the cursor is in the next wrapped line, move it up
+            QTextCursor tmp = endCur;
+            if (!tmp.movePosition (QTextCursor::StartOfLine)
+                && tmp.movePosition (QTextCursor::PreviousCharacter)
+                && tmp.blockNumber() == endCur.blockNumber())
+            {
+                QRect tRect (cursorRect (tmp));
+                if (p.y() >= tRect.top())
+                { // the point is aligned with this wrapped line (the equality is needed with RTL)
+                    endCur = tmp;
+                    cRect = tRect;
+                    extraGap = static_cast<int>(std::abs (p.x() - cRect.center().x())
+                                                / QFontMetricsF (document()->defaultFont())
+                                                  .horizontalAdvance (" "));
+                    p = cRect.center();
+                }
+            }
+        }
+    }
+    else if (p.y() > cRect.bottom())
+    {
+        /* do not stick to the end of the line when there is no text after it
+           and the cursor is below it */
+        p.setY (std::max (0, cRect.center().y()));
+        endCur = cursorForPosition (p);
+        cRect = cursorRect (endCur);
+        if (rtl)
+        {
+            if (p.y() <= cRect.top())
+            {
+                QTextCursor tmp = endCur;
+                if (tmp.movePosition (QTextCursor::PreviousCharacter)
+                    && tmp.blockNumber() == endCur.blockNumber())
+                {
+                    endCur = tmp;
+                    cRect = cursorRect (endCur);
+                }
+            }
+            else if (p.y() > cRect.bottom())
+            {
+                QTextCursor tmp = endCur;
+                if (tmp.movePosition (QTextCursor::NextCharacter)
+                    && tmp.blockNumber() == endCur.blockNumber())
+                {
+                    endCur = tmp;
+                    cRect = cursorRect (endCur);
+                }
+            }
+        }
+    }
+    /* also, consider the top and left document margins by using the cursor rectangle */
+    QPoint c (cRect.center());
+    if (rtl)
+        p.setX (std::min (p.x(), std::min (c.x(), viewport()->width())));
+    else
+        p.setX (std::max (std::max (0, c.x()), p.x()));
+    p.setY (std::max (std::max (0, c.y()), p.y()));
+    endCur = cursorForPosition (p);
+    if (rtl)
+    {
+        cRect = cursorRect (endCur);
+        if (p.y() <= cRect.top())
+        {
+            QTextCursor tmp = endCur;
+            if (tmp.movePosition (QTextCursor::PreviousCharacter)
+                && tmp.blockNumber() == endCur.blockNumber())
+            {
+                endCur = tmp;
+            }
+        }
+        else if (p.y() > cRect.bottom())
+        {
+            QTextCursor tmp = endCur;
+            if (tmp.movePosition (QTextCursor::NextCharacter)
+                && tmp.blockNumber() == endCur.blockNumber())
+            {
+                endCur = tmp;
+            }
+        }
+    }
+
+    highlightColumn (endCur,
+                     // the gap between the actual position and the cursor
+                     static_cast<int>(std::abs (p.x() - cursorRect (endCur).center().x())
+                                      / QFontMetricsF (document()->defaultFont())
+                                        .horizontalAdvance (" ")) + extraGap);
+}
+/*************************/
 void TextEdit::mouseMoveEvent (QMouseEvent *event)
 {
-    /* prevent dragging if there is no real mouse movement */
     if (event->buttons() == Qt::LeftButton
-        && (event->globalPos() - selectionPressPoint_).manhattanLength() <= qApp->startDragDistance())
-    {
+        && event->modifiers() == (Qt::ShiftModifier | Qt::ControlModifier))
+    { // column highlighting
+        makeColumn (event->position().toPoint());
+        event->accept();
         return;
     }
 
     QPlainTextEdit::mouseMoveEvent (event);
 
     if (!highlighter_) return;
-    if (!(qApp->keyboardModifiers() & Qt::ControlModifier))
+    if (event->modifiers() != Qt::ControlModifier)
     {
-        viewport()->setCursor (Qt::IBeamCursor);
+        if (viewport()->cursor().shape() != Qt::IBeamCursor)
+            viewport()->setCursor (Qt::IBeamCursor);
         return;
     }
 
-    if (getUrl (cursorForPosition (event->pos()).position()).isEmpty())
-        viewport()->setCursor (Qt::IBeamCursor);
-    else
+    if (getUrl (cursorForPosition (event->position().toPoint()).position()).isEmpty())
+    {
+        if (viewport()->cursor().shape() != Qt::IBeamCursor)
+            viewport()->setCursor (Qt::IBeamCursor);
+    }
+    else if (viewport()->cursor().shape() != Qt::PointingHandCursor)
         viewport()->setCursor (Qt::PointingHandCursor);
 }
 /*************************/
@@ -2066,6 +2717,8 @@ void TextEdit::mousePressEvent (QMouseEvent *event)
     /* forget the last cursor position */
     keepTxtCurHPos_ = false;
     txtCurHPos_ = -1;
+
+    mousePressed_ = true;
 
     /* With a triple click, QPlainTextEdit selects the current block
        plus its newline, if any. But it is better to select the
@@ -2078,97 +2731,94 @@ void TextEdit::mousePressEvent (QMouseEvent *event)
             && event->buttons() == Qt::LeftButton)
         {
             tripleClickTimer_.invalidate();
-            QTextCursor txtCur = textCursor();
-            const QString txt = txtCur.block().text();
-            const int l = txt.length();
-            if (l > 10000) return;
-            txtCur.movePosition (QTextCursor::StartOfBlock);
-            int i = 0;
-            while (i < l && txt.at (i).isSpace())
-                ++i;
-            /* WARNING: QTextCursor::movePosition() can be a mess with RTL
-                        but QTextCursor::setPosition() works fine. */
-            if (i < l)
+            if (event->modifiers() != Qt::ControlModifier)
             {
-                txtCur.setPosition (txtCur.position() + i);
-                int j = l;
-                while (j > i && txt.at (j -  1).isSpace())
-                    --j;
-                txtCur.setPosition (txtCur.position() + j - i, QTextCursor::KeepAnchor);
+                QTextCursor txtCur = textCursor();
+                const QString txt = txtCur.block().text();
+                const int l = txt.length();
+                txtCur.movePosition (QTextCursor::StartOfBlock);
+                int i = 0;
+                while (i < l && txt.at (i).isSpace())
+                    ++i;
+                /* WARNING: QTextCursor::movePosition() can be a mess with RTL
+                            but QTextCursor::setPosition() works fine. */
+                if (i < l)
+                {
+                    txtCur.setPosition (txtCur.position() + i);
+                    int j = l;
+                    while (j > i && txt.at (j -  1).isSpace())
+                        --j;
+                    txtCur.setPosition (txtCur.position() + j - i, QTextCursor::KeepAnchor);
+                    setTextCursor (txtCur);
+                }
+                if (txtCur.hasSelection())
+                {
+                    QClipboard *cl = QApplication::clipboard();
+                    if (cl->supportsSelection())
+                        cl->setText (txtCur.selection().toPlainText(), QClipboard::Selection);
+                }
+                event->accept();
+                return;
             }
-            else
-                txtCur.setPosition (txtCur.position() + i, QTextCursor::KeepAnchor);
-            setTextCursor (txtCur);
-            return;
-        }
-        tripleClickTimer_.invalidate();
-    }
-
-    /* get the global press position if it's inside a selection to know
-       whether there will be a real mouse movement at mouseMoveEvent() */
-    if (event->buttons() == Qt::LeftButton
-        && qApp->keyboardModifiers() == Qt::NoModifier)
-    {
-        QTextCursor cur = cursorForPosition (event->pos());
-        int pos = cur.position();
-        QTextCursor txtCur = textCursor();
-        int selStart = txtCur.selectionStart();
-        int selEnd = txtCur.selectionEnd();
-        if (pos == cur.anchor() && selStart != selEnd
-            && pos >= qMin (selStart, selEnd) && pos <= qMax (selStart, selEnd))
-        {
-            selectionPressPoint_ = event->globalPos();
         }
         else
-            selectionPressPoint_ = QPoint();
+            tripleClickTimer_.invalidate();
     }
-    else
-        selectionPressPoint_ = QPoint();
+
+    /* remove the column highlight if this is not a right click
+       (also, see "QPlainTextEdit::cursorPositionChanged" in c-tor) */
+    if (!colSel_.isEmpty() && event->button() != Qt::RightButton)
+        removeColumnHighlight();
+
+    if (event->button() == Qt::LeftButton)
+    {
+        if (event->modifiers() == (Qt::ShiftModifier | Qt::ControlModifier))
+        { // column highlighting
+            makeColumn (event->position().toPoint());
+            event->accept();
+            return;
+        }
+        pressPoint_ = event->position().toPoint();
+    }
 
     QPlainTextEdit::mousePressEvent (event);
-
-    if (highlighter_
-        && event->button() == Qt::LeftButton
-        && (qApp->keyboardModifiers() & Qt::ControlModifier))
-    {
-        pressPoint_ = event->pos();
-    }
 }
 /*************************/
 void TextEdit::mouseReleaseEvent (QMouseEvent *event)
 {
     QPlainTextEdit::mouseReleaseEvent (event);
-    if (event->button() == Qt::LeftButton)
-    {
-        /* workaround for copying to the selection clipboard;
-           see TextEdit::copy()/cut() for an explanation */
-        QTextCursor cursor = textCursor();
-        if (cursor.hasSelection())
-        {
-            QClipboard *cl = QApplication::clipboard();
-            if (cl->supportsSelection())
-                cl->setText (cursor.selection().toPlainText(), QClipboard::Selection);
-        }
-    }
-    else return;
+    mousePressed_ = false;
 
-    if (!highlighter_
-        || !(qApp->keyboardModifiers() & Qt::ControlModifier)
-        /* another key may also be pressed (-> keyPressEvent) */
-        || viewport()->cursor().shape() != Qt::PointingHandCursor)
+    if (event->button() != Qt::LeftButton || !highlighter_)
+        return;
+    if (event->modifiers() != Qt::ControlModifier)
     {
+        if (viewport()->cursor().shape() == Qt::PointingHandCursor)
+        {
+            /* this can happen if the window or viewport was inactive when
+               the left mouse button was pressed but Ctrl was released before it */
+            viewport()->setCursor (Qt::IBeamCursor);
+        }
         return;
     }
+    if (viewport()->cursor().shape() != Qt::PointingHandCursor)
+        return; // another key may also be pressed besides Ctrl (-> keyPressEvent)
 
-    QTextCursor cur = cursorForPosition (event->pos());
-    QString str = getUrl (cur.position());
-    if (!str.isEmpty() && cur == cursorForPosition (pressPoint_))
+    QTextCursor cur = cursorForPosition (event->position().toPoint());
+    if (cur == cursorForPosition (pressPoint_))
     {
-        QUrl url (str);
-        if (url.isRelative()) // treat relative URLs as local paths (not needed here)
-            url = QUrl::fromUserInput (str, "/");
-        if (!QProcess::startDetached ("gio", QStringList() << "open" << url.toString()))
-            QDesktopServices::openUrl (url);
+        QString str = getUrl (cur.position());
+        if (!str.isEmpty())
+        {
+            QUrl url (str);
+            if (url.isRelative()) // treat relative URLs as local paths (not needed here)
+                url = QUrl::fromUserInput (str, "/");
+            if (QStandardPaths::findExecutable ("gio").isEmpty()
+                || !QProcess::startDetached ("gio", QStringList() << "open" << url.toString()))
+            {
+                QDesktopServices::openUrl (url);
+            }
+        }
     }
     pressPoint_ = QPoint();
 }
@@ -2177,13 +2827,79 @@ void TextEdit::mouseDoubleClickEvent (QMouseEvent *event)
 {
     tripleClickTimer_.start();
     QPlainTextEdit::mouseDoubleClickEvent (event);
+
+    /* Select the text between spaces with Ctrl.
+       NOTE: QPlainTextEdit should process the event before this. */
+    if (event->button() == Qt::LeftButton
+        && event->modifiers() == Qt::ControlModifier)
+    {
+        QTextCursor txtCur = textCursor();
+        const int blockPos = txtCur.block().position();
+        const QString txt = txtCur.block().text();
+        const int l = txt.length();
+        int anc = txtCur.anchor();
+        int pos = txtCur.position();
+        while (anc > blockPos && !txt.at (anc - blockPos - 1).isSpace())
+            -- anc;
+        while (pos < blockPos + l && !txt.at (pos - blockPos).isSpace())
+            ++ pos;
+        if (anc != textCursor().anchor() || pos != textCursor().position())
+        {
+            txtCur.setPosition (anc);
+            txtCur.setPosition (pos, QTextCursor::KeepAnchor);
+            setTextCursor (txtCur);
+            if (txtCur.hasSelection())
+            {
+                QClipboard *cl = QApplication::clipboard();
+                if (cl->supportsSelection())
+                    cl->setText (txtCur.selection().toPlainText(), QClipboard::Selection);
+            }
+            event->accept();
+        }
+    }
+}
+/*************************/
+void TextEdit::removeColumnHighlight()
+{
+    int n = colSel_.count();
+    if (n == 0) return;
+    QList<QTextEdit::ExtraSelection> es = extraSelections();
+    int nRed = redSel_.count();
+    while (n > 0 && es.size() - nRed > 0)
+    {
+        es.removeAt (es.size() - 1 - nRed);
+        --n;
+    }
+    colSel_.clear();
+    setExtraSelections (es);
+    if (!textCursor().hasSelection())
+        emit canCopy (false);
+
+    if (selectionTimerId_)
+    {
+        killTimer (selectionTimerId_);
+        selectionTimerId_ = 0;
+    }
+    selectionTimerId_ = startTimer (UPDATE_INTERVAL);
+}
+/*************************/
+int TextEdit::selectionSize() const
+{
+    int res = textCursor().selectedText().size();
+    if (res > 0) return res;
+    for (auto const &extra : std::as_const (colSel_))
+    {
+        res += extra.cursor.selectedText().size();
+    }
+    return res;
 }
 /*************************/
 bool TextEdit::event (QEvent *event)
 {
     if (highlighter_
         && ((event->type() == QEvent::WindowDeactivate && hasFocus()) // another window is activated
-            || event->type() == QEvent::FocusOut)) // another widget has been focused
+            || event->type() == QEvent::FocusOut) // another widget has been focused
+        && viewport()->cursor().shape() != Qt::IBeamCursor)
     {
         viewport()->setCursor (Qt::IBeamCursor);
     }
@@ -2257,6 +2973,179 @@ static bool findBackward (const QTextDocument *txtdoc, const QString &str,
     cursor = QTextCursor();
     return false;
 }
+
+/************************************************************************
+ ***** Qt's forward search goes to the end of the document but we  *****
+ ***** may need to stop at some position. Therefore, we do our own *****
+ ***** forward search by using the following two static functions. *****
+ ************************************************************************/
+static bool findForwardInBlock (const QTextBlock &block, const QString &str, int offset,
+                                QTextCursor &cursor, QTextDocument::FindFlags flags)
+{
+    Qt::CaseSensitivity cs = !(flags & QTextDocument::FindCaseSensitively)
+                             ? Qt::CaseInsensitive : Qt::CaseSensitive;
+
+    QString text = block.text();
+    text.replace (QChar::Nbsp, QLatin1Char (' '));
+    int idx = -1;
+    while (offset >= 0 && offset <= text.length())
+    {
+        idx = text.indexOf (str, offset, cs);
+        if (idx == -1)
+            return false;
+        if (flags & QTextDocument::FindWholeWords)
+        {
+            const int start = idx;
+            const int end = start + str.length();
+            if ((start != 0 && text.at (start - 1).isLetterOrNumber())
+                || (end != text.length() && text.at (end).isLetterOrNumber()))
+            { // if this is not a whole word, continue the search
+                offset = end + (str.length() == 0 // a zero-length string
+                                || str.at (str.length() - 1).isLetterOrNumber() ? 1 : 0);
+                idx = -1;
+                continue;
+            }
+        }
+        cursor.setPosition (block.position() + idx);
+        cursor.setPosition (cursor.position() + str.length(), QTextCursor::KeepAnchor);
+        return true;
+    }
+    return false;
+}
+
+static bool findForward (const QTextDocument *txtdoc, const QString &str,
+                         QTextCursor &cursor, QTextDocument::FindFlags flags,
+                         const int end)
+{
+    if (!str.isEmpty() && !cursor.isNull())
+    {
+        int pos = cursor.selectionEnd();
+        QTextBlock block = txtdoc->findBlock (pos);
+        int blockOffset = pos - block.position();
+        while (block.isValid() && (end <= 0 || block.position() <= end))
+        {
+            if (findForwardInBlock (block, str, blockOffset, cursor, flags))
+            {
+                /* check the exact position */
+                if (end > 0 && cursor.anchor() > end)
+                {
+                    cursor = QTextCursor();
+                    return false;
+                }
+                return true;
+            }
+            block = block.next();
+            blockOffset = 0;
+        }
+    }
+    cursor = QTextCursor();
+    return false;
+}
+
+/**********************************************************************
+ ***** The following static functions are for searching regular   *****
+ ***** expressions forward and backward. Each search should be    *****
+ ***** done by two functions because, otherwise, lots of CPU time *****
+ ***** and memory might be used with unusually large texts.       *****
+ **********************************************************************/
+static bool findRegexBackwardInBlock (const QTextBlock &block, const QRegularExpression &regex,
+                                      int offset, QTextCursor &cursor, const int start)
+{
+    QString text = block.text();
+    QRegularExpressionMatch match;
+    while (offset >= 0 && offset <= text.length())
+    {
+        int idx = text.lastIndexOf (regex, offset, &match);
+        if (idx == -1)
+            return false;
+        /* no empty match (e.g., with "\w*", or with
+           ".*" and when the cursor is at the block start) */
+        if (match.capturedLength() == 0
+            /* also, the match start should be before the search start */
+            || block.position() + idx == start)
+        {
+            -- offset;
+            continue;
+        }
+        cursor.setPosition (block.position() + idx);
+        cursor.setPosition (cursor.position() + match.capturedLength(), QTextCursor::KeepAnchor);
+        return true;
+    }
+    return false;
+}
+
+static bool findRegexBackward (const QTextDocument *txtdoc, const QRegularExpression &regex,
+                               QTextCursor &cursor)
+{
+    if (!cursor.isNull())
+    {
+        int pos = cursor.anchor();
+        QTextBlock block = txtdoc->findBlock (pos);
+        int blockOffset = pos - block.position();
+        while (block.isValid())
+        {
+            /* with a backward search, the search start ("pos") should also be checked */
+            if (findRegexBackwardInBlock (block, regex, blockOffset, cursor, pos))
+                return true;
+            block = block.previous();
+            blockOffset = block.length() - 1; // newline is included in QTextBlock::length()
+        }
+    }
+    cursor = QTextCursor();
+    return false;
+}
+//--------------------
+static bool findRegexForwardInBlock (const QTextBlock &block, const QRegularExpression &regex,
+                                     int offset, QTextCursor &cursor)
+{
+    QString text = block.text();
+    QRegularExpressionMatch match;
+    while (offset >= 0 && offset <= text.length())
+    {
+        int idx = text.indexOf (regex, offset, &match);
+        if (idx == -1)
+            return false;
+        if (match.capturedLength() == 0)
+        {
+            /* no empty match (e.g., with "\w*", or with
+               ".*" and when the cursor is at the block end) */
+            ++ offset;
+            continue;
+        }
+        cursor.setPosition (block.position() + idx);
+        cursor.setPosition (cursor.position() + match.capturedLength(), QTextCursor::KeepAnchor);
+        return true;
+    }
+    return false;
+}
+
+static bool findRegexForward (const QTextDocument *txtdoc, const QRegularExpression &regex,
+                              QTextCursor &cursor, const int end)
+{
+    if (!cursor.isNull())
+    {
+        int pos = cursor.selectionEnd(); // as with an ordinary search
+        QTextBlock block = txtdoc->findBlock (pos);
+        int blockOffset = pos - block.position();
+        while (block.isValid() && (end <= 0 || block.position() <= end))
+        {
+            if (findRegexForwardInBlock (block, regex, blockOffset, cursor))
+            {
+                /* check the exact position */
+                if (end > 0 && cursor.anchor() > end)
+                {
+                    cursor = QTextCursor();
+                    return false;
+                }
+                return true;
+            }
+            block = block.next();
+            blockOffset = 0;
+        }
+    }
+    cursor = QTextCursor();
+    return false;
+}
 /*************************/
 // This method extends the searchable strings to those with line breaks.
 // It also corrects the behavior of Qt's backward search and can set an
@@ -2276,74 +3165,14 @@ QTextCursor TextEdit::finding (const QString& str, const QTextCursor& start, QTe
                                             : QRegularExpression::CaseInsensitiveOption);
         if (!regexp.isValid())
             return QTextCursor();
-        QTextCursor cursor = start;
-        QRegularExpressionMatch match;
         if (!(flags & QTextDocument::FindBackward))
-        {
-            cursor.setPosition (qMax (cursor.anchor(), cursor.position())); // as with ordinary search
-            while (!cursor.atEnd())
-            {
-                if (!cursor.atBlockEnd()) // otherwise, it'll be returned with ".*"
-                {
-                    if (end > 0 && cursor.anchor() > end)
-                        break;
-                    int indx = cursor.block().text().indexOf (regexp, cursor.positionInBlock(), &match);
-                    if (indx > -1)
-                    {
-                        if (match.capturedLength() == 0) // no empty match (with "\w*", for example)
-                        {
-                            cursor.setPosition (cursor.position() + 1);
-                            continue;
-                        }
-                        if (end > 0 && indx + cursor.block().position() > end)
-                            break;
-                        res.setPosition (indx + cursor.block().position());
-                        res.setPosition (res.position() + match.capturedLength(), QTextCursor::KeepAnchor);
-                        return  res;
-                    }
-                }
-                if (!cursor.movePosition (QTextCursor::NextBlock))
-                    break;
-            }
-        }
-        else // with a backward search, the block/doc start should also be checked
-        {
-            cursor.setPosition (cursor.anchor()); // as with ordinary search
-            while (true)
-            {
-                const int bp = cursor.block().position();
-                int indx = cursor.block().text().lastIndexOf (regexp, cursor.position() - bp, &match);
-                if (indx > -1)
-                {
-                    if (match.capturedLength() == 0 // no empty match
-                        /* the match start should be before the search start */
-                        || bp + indx == start.anchor())
-                    {
-                        if (cursor.atBlockStart())
-                        {
-                            if (!cursor.movePosition (QTextCursor::PreviousBlock))
-                                break;
-                            cursor.movePosition (QTextCursor::EndOfBlock);
-                        }
-                        else
-                            cursor.setPosition (cursor.position() - 1);
-                        continue;
-                    }
-                    res.setPosition (indx + bp);
-                    res.setPosition (res.position() + match.capturedLength(), QTextCursor::KeepAnchor);
-                    return  res;
-                }
-                if (!cursor.movePosition (QTextCursor::PreviousBlock))
-                    break;
-                cursor.movePosition (QTextCursor::EndOfBlock);
-            }
-        }
-        return QTextCursor();
+            findRegexForward (document(), regexp, res, end);
+        else
+            findRegexBackward (document(), regexp, res);
     }
     else if (str.contains ('\n'))
     {
         QTextCursor cursor = start;
-        QTextCursor found;
         QStringList sl = str.split ("\n");
         int i = 0;
         Qt::CaseSensitivity cs = !(flags & QTextDocument::FindCaseSensitively)
@@ -2372,25 +3201,23 @@ QTextCursor TextEdit::finding (const QString& str, const QTextCursor& start, QTe
                     }
                     else
                     {
-                        if ((found = document()->find (subStr, cursor, flags)).isNull())
+                        if (!findForward (document(), subStr, cursor, flags, end))
                             return QTextCursor();
-                        if (end > 0 && found.anchor() > end)
-                            return QTextCursor();
-                        cursor.setPosition (found.position());
+                        int anc = cursor.anchor();
+                        cursor.setPosition (cursor.position());
                         /* if the match doesn't end the block... */
                         while (!cursor.atBlockEnd())
                         {
                             /* ... move the cursor to right and search until a match is found */
                             cursor.movePosition (QTextCursor::EndOfBlock);
                             cursor.setPosition (cursor.position() - subStr.length());
-                            if ((found = document()->find (subStr, cursor, flags)).isNull())
+                            if (!findForward (document(), subStr, cursor, flags, end))
                                 return QTextCursor();
-                            if (end > 0 && found.anchor() > end)
-                                return QTextCursor();
-                            cursor.setPosition (found.position());
+                            anc = cursor.anchor();
+                            cursor.setPosition (cursor.position());
                         }
 
-                        res.setPosition (found.anchor());
+                        res.setPosition (anc);
                         if (!cursor.movePosition (QTextCursor::NextBlock))
                             return QTextCursor();
                         ++i;
@@ -2429,21 +3256,21 @@ QTextCursor TextEdit::finding (const QString& str, const QTextCursor& start, QTe
                             i = 0;
                             continue;
                         }
-                        cursor.setPosition (cursor.anchor() + subStr.count());
+                        cursor.setPosition (cursor.anchor() + subStr.size());
                         break;
                     }
                     else
                     {
-                        if ((found = document()->find (subStr, cursor, flags)).isNull()
-                            || found.anchor() != cursor.position())
+                        if (!findForward (document(), subStr, cursor, flags, cursor.position()))
                         {
+                            cursor = res;
                             cursor.setPosition (res.position());
                             if (!cursor.movePosition (QTextCursor::NextBlock))
                                 return QTextCursor();
                             i = 0;
                             continue;
                         }
-                        cursor.setPosition (found.position());
+                        cursor.setPosition (cursor.position());
                         break;
                     }
                 }
@@ -2454,6 +3281,7 @@ QTextCursor TextEdit::finding (const QString& str, const QTextCursor& start, QTe
         {
             cursor.setPosition (cursor.anchor());
             int endPos = cursor.position();
+            QTextCursor found;
             while (i < sl.count())
             {
                 if (i == 0) // the last string
@@ -2476,7 +3304,7 @@ QTextCursor TextEdit::finding (const QString& str, const QTextCursor& start, QTe
                         while (cursor.anchor() > cursor.block().position())
                         {
                             /* ... move the cursor to left and search backward until a match is found */
-                            cursor.setPosition (cursor.block().position() + subStr.count());
+                            cursor.setPosition (cursor.block().position() + subStr.size());
                             if (!findBackward (document(), subStr, cursor, flags))
                                 return QTextCursor();
                         }
@@ -2522,7 +3350,7 @@ QTextCursor TextEdit::finding (const QString& str, const QTextCursor& start, QTe
                             i = 0;
                             continue;
                         }
-                        cursor.setPosition (cursor.anchor() - subStr.count());
+                        cursor.setPosition (cursor.anchor() - subStr.size());
                         break;
                     }
                     else
@@ -2550,11 +3378,7 @@ QTextCursor TextEdit::finding (const QString& str, const QTextCursor& start, QTe
     else // there's no line break
     {
         if (!(flags & QTextDocument::FindBackward))
-        {
-            res = document()->find (str, start, flags);
-            if (end > 0 && res.anchor() > end)
-                return QTextCursor();
-        }
+            findForward (document(), str, res, flags, end);
         else
             findBackward (document(), str, res, flags);
     }
@@ -2581,20 +3405,16 @@ void TextEdit::setSelectionHighlighting (bool enable)
         disconnect (document(), &QTextDocument::contentsChange, this, &TextEdit::onContentsChange);
         disconnect (this, &TextEdit::updateRect, this, &TextEdit::selectionHlight);
         disconnect (this, &TextEdit::resized, this, &TextEdit::selectionHlight);
-        if (selectionTimerId_)
-        {
-            killTimer (selectionTimerId_);
-            selectionTimerId_ = 0;
-        }
         /* remove all blue highlights */
         if (!blueSel_.isEmpty())
         {
             QList<QTextEdit::ExtraSelection> es = extraSelections();
+            int nCol = colSel_.count();
             int nRed = redSel_.count();
             int n = blueSel_.count();
-            while (n > 0 && es.size() - nRed > 0)
+            while (n > 0 && es.size() - nCol - nRed > 0)
             {
-                es.removeAt (es.size() - 1 - nRed);
+                es.removeAt (es.size() - 1 - nCol - nRed);
                 --n;
             }
             blueSel_.clear();
@@ -2610,18 +3430,20 @@ void TextEdit::selectionHlight()
 
     QList<QTextEdit::ExtraSelection> es = extraSelections();
     QTextCursor selCursor = textCursor();
-    const QString selTxt = selCursor.selection().toPlainText();
+    int minSel = std::min (selCursor.anchor(), selCursor.position());
+    int maxSel = std::max (selCursor.anchor(), selCursor.position());
+    int nCol = colSel_.count(); // column highlight (comes last but one)
     int nRed = redSel_.count(); // bracket highlights (come last)
 
     /* remove all blue highlights */
     int n = blueSel_.count();
-    while (n > 0 && es.size() - nRed > 0)
+    while (n > 0 && es.size() - nCol - nRed > 0)
     {
-        es.removeAt (es.size() - 1 - nRed);
+        es.removeAt (es.size() - 1 - nCol - nRed);
         --n;
     }
 
-    if (removeSelectionHighlights_ || selTxt.isEmpty())
+    if (removeSelectionHighlights_ || maxSel == minSel || maxSel - minSel > 100000)
     {
         /* avoid the computations of QWidgetTextControl::setExtraSelections
            as far as possible */
@@ -2633,48 +3455,61 @@ void TextEdit::selectionHlight()
         return;
     }
 
-    blueSel_.clear();
-
-    /* first put a start cursor at the top left edge... */
+    /* first put the start cursor at the top left corner... */
     QPoint Point (0, 0);
     QTextCursor start = cursorForPosition (Point);
-    /* ... then move it backward by the search text length */
-    int startPos = start.position() - selTxt.length();
+    /* ... then move it backward by the selection length */
+    int startPos = start.position() - maxSel + minSel;
     if (startPos >= 0)
         start.setPosition (startPos);
     else
         start.setPosition (0);
-    /* get the visible text to check if the search string is inside it */
+    /* also, move the start cursor outside the selection */
+    if (start.position() >= minSel && start.position() < maxSel)
+        start.setPosition (maxSel);
+
+    /* put the end cursor at the bottom right corner... */
     Point = QPoint (geometry().width(), geometry().height());
     QTextCursor end = cursorForPosition (Point);
     int endLimit = end.anchor();
-    int endPos = end.position() + selTxt.length();
+    /* ... and move it forward by the selection length */
+    int endPos = end.position() + maxSel - minSel;
     end.movePosition (QTextCursor::End);
     if (endPos <= end.position())
         end.setPosition (endPos);
-    QTextCursor visCur = start;
-    visCur.setPosition (end.position(), QTextCursor::KeepAnchor);
-    const QString str = visCur.selection().toPlainText(); // '\n' is included in this way
-    if (str.contains (selTxt)) // don't waste time if the selected text isn't visible
-    {
-        QTextDocument::FindFlags searchFlags = (QTextDocument::FindWholeWords | QTextDocument::FindCaseSensitively);
-        QColor color = hasDarkScheme() ? QColor (0, 77, 160) : QColor (130, 255, 255); // blue highlights
-        QTextCursor found;
+    /* also, move the end cursor outside the selection */
+    if (end.position() > minSel && end.position() <= maxSel)
+        end.setPosition (minSel);
 
-        while (!(found = finding (selTxt, start, searchFlags,  false, endLimit)).isNull())
+    /* don't waste time if the selected text is larger that the available space */
+    if (end.position() - start.position() < maxSel - minSel)
+    {
+        if (!blueSel_.isEmpty())
         {
-            if (selCursor.anchor() <= selCursor.position()
-                    ? (found.anchor() != selCursor.anchor() || found.position() != selCursor.position())
-                    : (found.anchor() != selCursor.position() || found.position() != selCursor.anchor()))
-            {
-                QTextEdit::ExtraSelection extra;
-                extra.format.setBackground (color);
-                extra.cursor = found;
-                blueSel_.append (extra);
-                es.insert (es.size() - nRed, extra);
-            }
-            start.setPosition (found.position());
+            blueSel_.clear();
+            setExtraSelections (es);
         }
+        return;
+    }
+
+    blueSel_.clear();
+
+    const QString selTxt = selCursor.selection().toPlainText();
+    QTextDocument::FindFlags searchFlags = (QTextDocument::FindWholeWords | QTextDocument::FindCaseSensitively);
+    QColor color = hasDarkScheme() ? QColor (0, 77, 160) : QColor (130, 255, 255); // blue highlights
+    QTextCursor found;
+
+    while (!(found = finding (selTxt, start, searchFlags, false, endLimit)).isNull())
+    {
+        if (found.anchor() >= maxSel || found.position() <= minSel)
+        {
+            QTextEdit::ExtraSelection extra;
+            extra.format.setBackground (color);
+            extra.cursor = found;
+            blueSel_.append (extra);
+            es.insert (es.size() - nCol - nRed, extra);
+        }
+        start.setPosition (found.position());
     }
     setExtraSelections (es);
 }
@@ -2712,6 +3547,151 @@ bool TextEdit::toSoftTabs()
     }
     start.endEditBlock();
     return res;
+}
+
+/*******************************************************************************
+ ***** The scrollbar position can't be restored precisely in a direct way  *****
+ ***** on reloading because text wrapping can make it unreliable. However, *****
+ ***** we can restore it as precisely as possible by finding and restoring *****
+ ***** the top, middle and bottom cursors in the following two functions.  *****
+ *******************************************************************************/
+TextEdit::viewPosition TextEdit::getViewPosition() const
+{
+    viewPosition vPos;
+    if (auto vp = viewport())
+    {
+        QRect vr = vp->rect();
+
+        /* top cursor (immediately below the top edge of the viewport) */
+        int h = QFontMetrics (document()->defaultFont()).lineSpacing();
+        QTextCursor topCur = cursorForPosition (QPoint (vr.left(), vr.top() + h / 2));
+        if (topCur.block().textDirection() == Qt::RightToLeft)
+            topCur = cursorForPosition (QPoint (vr.right() + 1, vr.top() + h / 2));
+        QRect cRect = cursorRect (topCur);
+        int top = cRect.top();
+        vPos.topPos = topCur.position();
+
+        /* current cursor
+           NOTE: The top edge of its rectangle may be a little above the
+                 top edge of the viewport. So, the position of the top cursor
+                 is used for knowing whether it isn't above the viewport. */
+        int curPosition = textCursor().position();
+        if (curPosition >= vPos.topPos)
+        {
+            cRect = cursorRect();
+            if (cRect.bottom() <= vr.bottom()
+                && cRect.left() >= vr.left() && cRect.right() <= vr.right())
+            {
+                vPos.curPos = curPosition; // otherwise, "vPos.curPos" is -1
+            }
+        }
+
+        /* bottom cursor (immediately above the bottom edge of the viewport) */
+        QTextCursor bottomCur = cursorForPosition (QPoint (vr.left(), vr.bottom()));
+        if (bottomCur.block().textDirection() == Qt::RightToLeft)
+            bottomCur = cursorForPosition (QPoint (vr.right() + 1, vr.bottom()));
+        cRect = cursorRect (bottomCur);
+        int bottom = cRect.bottom();
+        QTextCursor tmp = bottomCur;
+        while (!bottomCur.atStart() && bottom > vr.bottom())
+        {
+            tmp.setPosition (std::max (bottomCur.position() - 1, 0));
+            cRect = cursorRect (tmp);
+            if (tmp.block().textDirection() == Qt::RightToLeft)
+                tmp = cursorForPosition (QPoint (vr.right() + 1, cRect.center().y()));
+            else
+                tmp = cursorForPosition (QPoint (vr.left(), cRect.center().y()));
+            if (cRect.bottom() >= bottom || cRect.top() < vr.top())
+                break;
+            bottomCur.setPosition (tmp.position());
+            bottom = cRect.bottom();
+        }
+        vPos.bottomPos = bottomCur.position();
+
+        /* middle cursor */
+        int midHeight = (top + bottom + 1) / 2
+                        /* at the top of the document, the vertical
+                           offset should be taken into account */
+                        - (topCur.position() == 0 ? contentOffset().y() : 0);
+        tmp = cursorForPosition (QPoint (vr.left(), midHeight));
+        if (tmp.block().textDirection() == Qt::RightToLeft)
+            tmp = cursorForPosition (QPoint (vr.right() + 1, midHeight));
+        cRect = cursorRect (tmp);
+        if (cRect.top() >= midHeight)
+        {
+            tmp.setPosition (std::max (tmp.position() - 1, 0));
+            cRect = cursorRect (tmp);
+            if (tmp.block().textDirection() == Qt::RightToLeft)
+                tmp = cursorForPosition (QPoint (vr.right() + 1, cRect.center().y()));
+            else
+                tmp = cursorForPosition (QPoint (vr.left(), cRect.center().y()));
+        }
+        vPos.midPos = tmp.position();
+    }
+    return vPos;
+}
+/*************************/
+void TextEdit::setViewPostion (const viewPosition vPos)
+{
+    QTextCursor cur = textCursor();
+    cur.movePosition (QTextCursor::End);
+    int endPos = cur.position();
+    if (vPos.midPos < 0)
+    {
+        if (vPos.curPos >= 0)
+        {
+            cur.setPosition (std::min (vPos.curPos, endPos));
+            setTextCursor (cur);
+        }
+        return;
+    }
+
+    /* first center the middle cursor */
+    cur.setPosition (std::min (vPos.midPos, endPos));
+    setTextCursor (cur);
+    centerCursor();
+
+    /* if the middle cursor isn't at the line start, the text has changed */
+    if (auto vp = viewport())
+    {
+        QRect vr = vp->rect();
+        QRect cRect = cursorRect (cur);
+        QTextCursor tmp;
+        if (cur.block().textDirection() == Qt::RightToLeft)
+            tmp = cursorForPosition (QPoint (vr.right() + 1, cRect.center().y()));
+        else
+            tmp = cursorForPosition (QPoint (vr.left(), cRect.center().y()));
+        if (tmp != cur)
+        {
+            setTextCursor (tmp);
+            centerCursor();
+            if (vPos.curPos >= 0)
+            {
+                tmp.setPosition (std::min (vPos.curPos, endPos));
+                setTextCursor (tmp);
+            }
+            return;
+        }
+    }
+
+    /* also ensure that the top and bottom cursors are visible */
+    QTextCursor tmp = cur;
+    if (vPos.topPos >= 0)
+    {
+        tmp.setPosition (std::min (vPos.topPos, endPos));
+        setTextCursor (tmp);
+    }
+    if (vPos.bottomPos >= 0)
+    {
+        tmp.setPosition (std::min (vPos.bottomPos, endPos));
+        setTextCursor (tmp);
+    }
+
+    /* restore the original text cursor if it's visible;
+       otherwise, go back to the middle cursor */
+    if (vPos.curPos >= 0)
+        cur.setPosition (std::min (vPos.curPos, endPos));
+    setTextCursor (cur);
 }
 
 }

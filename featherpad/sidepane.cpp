@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2017-2020 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2017-2024 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -34,8 +34,13 @@ bool ListWidgetItem::operator<(const QListWidgetItem &other) const {
     {
         int end1 = txt1.indexOf (QLatin1Char ('.'), start1);
         int end2 = txt2.indexOf (QLatin1Char ('.'), start2);
-        int comp = collator_.compare (txt1.mid(start1, end1 - start1),
-                                      txt2.mid(start2, end2 - start2));
+        QString part1 = end1 == -1 ? txt1.sliced (start1, txt1.size() - start1)
+                                   : txt1.sliced (start1, end1 - start1);
+        QString part2 = end2 == -1 ? txt2.sliced (start2, txt2.size() - start2)
+                                   : txt2.sliced (start2, end2 - start2);
+        int comp = collator_.compare (part1, part2);
+        if (comp == 0)
+            comp = part1.size() - part2.size(); // a workaround for QCollator's bug
         if (comp != 0)
             return comp < 0;
         if (end1 == -1 || end2 == -1)
@@ -47,7 +52,8 @@ bool ListWidgetItem::operator<(const QListWidgetItem &other) const {
 /*************************/
 ListWidget::ListWidget (QWidget *parent) : QListWidget (parent)
 {
-    setAutoScroll (false); // Qt's autoscrolling has bugs; see ListWidget::scrollToCurrentItem()
+    setAutoScroll (false); // -> ListWidget::scrollToCurrentItem()
+    setVerticalScrollMode (QAbstractItemView::ScrollPerPixel); // -> ListWidget::scrollToCurrentItem()
     setMouseTracking (true); // for instant tooltips
     locked_ = false;
 
@@ -85,46 +91,43 @@ ListWidget::ListWidget (QWidget *parent) : QListWidget (parent)
 // To prevent deselection by Ctrl + left click; see "qabstractitemview.cpp".
 QItemSelectionModel::SelectionFlags ListWidget::selectionCommand (const QModelIndex &index, const QEvent *event) const
 {
-    Qt::KeyboardModifiers keyModifiers = Qt::NoModifier;
-    if (event)
+    Qt::KeyboardModifiers keyModifiers = event != nullptr && event->isInputEvent()
+                                             ? (static_cast<const QInputEvent*>(event))->modifiers()
+                                             : Qt::NoModifier;
+
+    if (selectionMode() == QAbstractItemView::SingleSelection)
     {
-        switch (event->type()) {
-            case QEvent::MouseButtonDblClick:
-            case QEvent::MouseButtonPress:
-            case QEvent::MouseButtonRelease:
-            case QEvent::MouseMove:
-            case QEvent::KeyPress:
-            case QEvent::KeyRelease:
-                keyModifiers = (static_cast<const QInputEvent*>(event))->modifiers();
-                break;
-            default:
-                keyModifiers = QApplication::keyboardModifiers();
+        if (!index.isValid())
+            return QItemSelectionModel::NoUpdate;
+        if ((keyModifiers & Qt::ControlModifier)
+            && selectionModel()->isSelected (index))
+        {
+            return QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows;
         }
     }
-    if (selectionMode() == QAbstractItemView::SingleSelection && (keyModifiers & Qt::ControlModifier) && selectionModel()->isSelected (index))
-        return QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows;
-    else
-        return QListWidget::selectionCommand (index, event);
+    return QListWidget::selectionCommand (index, event);
 }
 /*************************/
-// QListView::scrollTo() doesn't work fine because it doesn't
-// consider the current scrollbar, after some items are hidden.
+// QListView::scrollTo() doesn't work correctly when the scroll mode is per item
+// and some items are hidden or have different heights. Although the scrolling is
+// set to per-pixel by the c-tor, we use this function for the sake of certainty.
 void ListWidget::scrollToCurrentItem()
 {
     QModelIndex index = currentIndex();
     if (!index.isValid()) return;
     const QRect rect = visualRect (index);
     const QRect area = viewport()->rect();
-    if (area.contains (rect)) return;
+    if (rect.isEmpty()) return;
 
     bool above (rect.top() < area.top());
     bool below (rect.bottom() > area.bottom());
+    if (!above && !below) return;
 
     int verticalValue = verticalScrollBar()->value();
     QRect r = rect.adjusted (-spacing(), -spacing(), spacing(), spacing());
     if (above)
         verticalValue += r.top();
-    else if (below)
+    else
         verticalValue += qMin (r.top(), r.bottom() - area.height() + 1);
     verticalScrollBar()->setValue (verticalValue);
 }
@@ -140,7 +143,7 @@ void ListWidget::mousePressEvent (QMouseEvent *event)
     {
         if (event->button() == Qt::MiddleButton)
         {
-            QModelIndex index = indexAt (event->pos());
+            QModelIndex index = indexAt (event->position().toPoint());
             if (QListWidgetItem *item = itemFromIndex (index)) // index is checked for its validity in QListWidget::itemFromIndex()
                 emit closeItem (item);
             else
@@ -157,9 +160,9 @@ void ListWidget::mouseMoveEvent (QMouseEvent *event)
 {
     QListWidget::mouseMoveEvent (event);
     if (event->button() == Qt::NoButton && !(event->buttons() & Qt::LeftButton))
-    {
-        if (QListWidgetItem *item = itemAt (event->pos()))
-            QToolTip::showText (event->globalPos(), item->toolTip());
+    { // "this" is for Wayland, when the window isn't active
+        if (QListWidgetItem *item = itemAt (event->position().toPoint()))
+            QToolTip::showText (event->globalPosition().toPoint(), item->toolTip(), this);
         else
             QToolTip::hideText();
     }

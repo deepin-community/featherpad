@@ -29,12 +29,15 @@
     <file>icons/go-next.svg</file>
     <file>icons/go-previous.svg</file>
     <file>icons/go-up.svg</file>
+    <file>icons/hasTarget.svg</file>
     <file>icons/help-about.svg</file>
     <file>icons/help-contents.svg</file>
     <file>icons/link.svg</file>
     <file>icons/preferences-desktop-font.svg</file>
     <file>icons/preferences-system.svg</file>
     <file>icons/regex.svg</file>
+    <file>icons/session.svg</file>
+    <file>icons/side-pane.svg</file>
     <file>icons/system-run.svg</file>
     <file>icons/tab.svg</file>
     <file>icons/tab-close-other.svg</file>

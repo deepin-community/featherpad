@@ -151,7 +151,7 @@ void Highlighter::htmlBrackets (const QString &text, const int start)
                 }
                 else
                 {
-                    quoteExpression.setPattern ("\'");
+                    quoteExpression = singleQuoteMark;
                     quote = currentBlockState() == htmlStyleState ? htmlStyleSingleQuoteState
                                                                   : singleQuoteState;
                 }
@@ -165,7 +165,7 @@ void Highlighter::htmlBrackets (const QString &text, const int start)
             if (quote == doubleQuoteState || quote == htmlStyleDoubleQuoteState)
                 quoteExpression = quoteMark;
             else
-                quoteExpression.setPattern ("\'");
+                quoteExpression = singleQuoteMark;
         }
 
         while (quoteIndex >= braIndex && quoteIndex <= endLimit)
@@ -183,7 +183,7 @@ void Highlighter::htmlBrackets (const QString &text, const int start)
                 }
                 else
                 {
-                    quoteExpression.setPattern ("\'");
+                    quoteExpression = singleQuoteMark;
                     quote = currentBlockState() == htmlStyleState ? htmlStyleSingleQuoteState
                                                                   : singleQuoteState;
                 }
@@ -296,7 +296,11 @@ void Highlighter::htmlBrackets (const QString &text, const int start)
     if (mainFormatting)
     {
         static_cast<TextBlockData *>(currentBlock().userData())->setHighlighted(); // completely highlighted
+#if (QT_VERSION >= QT_VERSION_CHECK(6,6,0))
+        for (const HighlightingRule &rule : std::as_const (highlightingRules))
+#else
         for (const HighlightingRule &rule : qAsConst (highlightingRules))
+#endif
         {
             if (rule.format == whiteSpaceFormat)
             {
@@ -310,9 +314,6 @@ void Highlighter::htmlBrackets (const QString &text, const int start)
 
                 /* also, mark encoded and unencoded ampersands */
                 QRegularExpression ampersand ("&");
-                QTextCharFormat errorFormat;
-                errorFormat.setFontUnderline (true);
-                errorFormat.setForeground (Red);
                 QTextCharFormat encodedFormat;
                 encodedFormat.setForeground (DarkMagenta);
                 encodedFormat.setFontItalic (true);
@@ -446,7 +447,11 @@ void Highlighter::htmlCSSHighlighter (const QString &text, const int start)
                           commentFormat);
         if (mainFormatting)
         {
+#if (QT_VERSION >= QT_VERSION_CHECK(6,6,0))
+            for (const HighlightingRule &rule : std::as_const (highlightingRules))
+#else
             for (const HighlightingRule &rule : qAsConst (highlightingRules))
+#endif
             { // CSS doesn't have any main formatting except for witesapces
                 if (rule.format == whiteSpaceFormat)
                 {
@@ -542,6 +547,7 @@ void Highlighter::htmlJavascript (const QString &text)
     commentStartExpression = htmlSubcommetStart;
     commentEndExpression = htmlSubcommetEnd;
     progLan = "javascript";
+    multilineQuote_ = true; // needed alongside progLan
 
     bool wasJavascript (false);
     QTextBlock prevBlock = currentBlock().previous();
@@ -618,7 +624,11 @@ void Highlighter::htmlJavascript (const QString &text)
         }
         if (mainFormatting)
         {
+#if (QT_VERSION >= QT_VERSION_CHECK(6,6,0))
+            for (const HighlightingRule &rule : std::as_const (highlightingRules))
+#else
             for (const HighlightingRule &rule : qAsConst (highlightingRules))
+#endif
             {
                 if (rule.format == commentFormat)
                     continue;
@@ -699,6 +709,7 @@ void Highlighter::htmlJavascript (const QString &text)
             setFormat (javaEndIndex, text.length() - javaEndIndex, mainFormat);
             setCurrentBlockState (0);
             progLan = "html";
+            multilineQuote_ = false;
             commentStartExpression = htmlCommetStart;
             commentEndExpression = htmlCommetEnd;
             htmlBrackets (text, javaEndIndex);
@@ -706,6 +717,7 @@ void Highlighter::htmlJavascript (const QString &text)
             commentStartExpression = htmlSubcommetStart;
             commentEndExpression = htmlSubcommetEnd;
             progLan = "javascript";
+            multilineQuote_ = true;
         }
 
         javaIndex = text.indexOf (javaStartExp, javaIndex + len, &startMatch);
@@ -721,6 +733,7 @@ void Highlighter::htmlJavascript (const QString &text)
 
     /* revert to html */
     progLan = "html";
+    multilineQuote_ = false;
     commentStartExpression = htmlCommetStart;
     commentEndExpression = htmlCommetEnd;
 }
