@@ -19,13 +19,16 @@
 
 #include "highlighter.h"
 
+#include <algorithm>
+
 namespace FeatherPad {
+
+static const QRegularExpression regexStartExp ("/");
+static const QRegularExpression regexEndExp ("/[A-Za-z0-9_]*");
 
 // This is only for the starting "/".
 bool Highlighter::isEscapedRegex (const QString &text, const int pos)
 {
-    if (progLan == "perl") return isEscapedPerlRegex (text, pos);
-
     if (pos < 0) return false;
     if (progLan != "javascript" && progLan != "qml")
         return false;
@@ -42,10 +45,11 @@ bool Highlighter::isEscapedRegex (const QString &text, const int pos)
         return true;
     }
 
-    /* escape "<.../>", "</...>" and the single-line comment sign ("//")
+    /* escape "<.../>", "</...>", the single-line comment sign
+       and the start multiline comment sign
        FIXME: In this way and with what follows, "/>/g" isn't highlighted. */
     if ((text.length() > pos + 1 && ((progLan == "javascript" && text.at (pos + 1) == '>')
-                                     || text.at (pos + 1) == '/'))
+                                     || text.at (pos + 1) == '/' || text.at (pos + 1) == '*'))
         || (pos > 0 && progLan == "javascript" && text.at (pos - 1) == '<'))
     {
         return true;
@@ -115,7 +119,7 @@ bool Highlighter::isEscapedRegex (const QString &text, const int pos)
                     if (qmlKeys.pattern().isEmpty())
                         qmlKeys.setPattern (keywords (progLan).join ('|'));
                 }
-                int len = qMin (12, last + 1);
+                int len = std::min (12, last + 1);
                 QString str = txt.mid (last - len + 1, len);
                 int j;
                 if ((j = str.lastIndexOf (progLan == "javascript" ? jsKeys : qmlKeys, -1, &keyMatch)) > -1
@@ -159,7 +163,7 @@ bool Highlighter::isEscapedRegex (const QString &text, const int pos)
                     if (qmlKeys.pattern().isEmpty())
                         qmlKeys.setPattern (keywords (progLan).join ('|'));
                 }
-                int len = qMin (12, i + 1);
+                int len = std::min (12, i + 1);
                 QString str = text.mid (i - len + 1, len);
                 if ((j = str.lastIndexOf (progLan == "javascript" ? jsKeys : qmlKeys, -1, &keyMatch)) > -1
                     && j + keyMatch.capturedLength() == len)
@@ -202,6 +206,7 @@ bool Highlighter::isEscapedRegexEndSign (const QString &text, const int start, c
 bool Highlighter::isInsideRegex (const QString &text, const int index)
 {
     if (progLan == "perl") return isInsidePerlRegex (text, index);
+    if (progLan == "ruby") return isInsideRubyRegex (text, index);
 
     if (index < 0) return false;
     if (progLan != "javascript" && progLan != "qml")
@@ -226,19 +231,19 @@ bool Highlighter::isInsideRegex (const QString &text, const int index)
     {
         if (previousBlockState() != regexState)
         {
-            exp.setPattern ("/");
+            exp = regexStartExp;
             N = 0;
         }
         else
         {
-            exp.setPattern ("/[A-Za-z0-9_]*");
+            exp = regexEndExp;
             N = 1;
             res = true;
         }
     }
     else // a new search from the last position
     {
-        exp.setPattern ("/");
+        exp = regexStartExp;
         N = 0;
     }
 
@@ -261,7 +266,7 @@ bool Highlighter::isInsideRegex (const QString &text, const int index)
         {
             if (res)
             {
-                pos = qMax (pos, 0);
+                pos = std::max (pos, 0);
                 setFormat (pos, nxtPos - pos + match.capturedLength(), regexFormat);
             }
             --N;
@@ -273,11 +278,11 @@ bool Highlighter::isInsideRegex (const QString &text, const int index)
         {
             if (TextBlockData *data = static_cast<TextBlockData *>(currentBlock().userData()))
                 data->insertLastFormattedRegex (nxtPos + match.capturedLength());
-            pos = qMax (pos, 0);
+            pos = std::max (pos, 0);
             setFormat (pos, nxtPos - pos + match.capturedLength(), regexFormat);
         }
 
-        if (index <= nxtPos) // they may be equal, as when "//" is at the end of "/...//"
+        if (index <= nxtPos) // they may be equal, as in "/...//" or "/.../*"
         {
             if (N % 2 == 0) res = true;
             else res = false;
@@ -286,12 +291,12 @@ bool Highlighter::isInsideRegex (const QString &text, const int index)
 
         if (N % 2 == 0)
         {
-            exp.setPattern ("/");
+            exp = regexStartExp;
             res = false;
         }
         else
         {
-            exp.setPattern ("/[A-Za-z0-9_]*");
+            exp = regexEndExp;
             res = true;
         }
 
@@ -306,6 +311,11 @@ void Highlighter::multiLineRegex(const QString &text, const int index)
     if (progLan == "perl")
     {
         multiLinePerlRegex (text);
+        return;
+    }
+    if (progLan == "ruby")
+    {
+        multiLineRubyRegex (text);
         return;
     }
 
@@ -323,14 +333,12 @@ void Highlighter::multiLineRegex(const QString &text, const int index)
 
     int startIndex = index;
     QRegularExpressionMatch startMatch;
-    QRegularExpression startExp ("/");
     QRegularExpressionMatch endMatch;
-    QRegularExpression endExp ("/[A-Za-z0-9_]*");
     QTextCharFormat fi;
 
     if (prevState != regexState || startIndex > 0)
     {
-        startIndex = text.indexOf (startExp, startIndex, &startMatch);
+        startIndex = text.indexOf (regexStartExp, startIndex, &startMatch);
         /* skip comments and quotations (all formatted to this point) */
         fi = format (startIndex);
         while (startIndex >= 0
@@ -338,7 +346,7 @@ void Highlighter::multiLineRegex(const QString &text, const int index)
                    || fi == commentFormat || fi == urlFormat
                    || fi == quoteFormat || fi == altQuoteFormat || fi == urlInsideQuoteFormat))
         {
-            startIndex = text.indexOf (startExp, startIndex + 1, &startMatch);
+            startIndex = text.indexOf (regexStartExp, startIndex + 1, &startMatch);
             fi = format (startIndex);
         }
     }
@@ -352,18 +360,17 @@ void Highlighter::multiLineRegex(const QString &text, const int index)
         if (prevState == regexState && startIndex == 0)
         {
             indx = 0;
-            endIndex = text.indexOf (endExp, 0, &endMatch);
+            endIndex = text.indexOf (regexEndExp, 0, &endMatch);
         }
         else
         {
             indx = startIndex + startMatch.capturedLength();
-            endIndex = text.indexOf (endExp, indx, &endMatch);
+            endIndex = text.indexOf (regexEndExp, indx, &endMatch);
         }
 
         while (isEscapedRegexEndSign (text, indx, endIndex))
-            endIndex = text.indexOf (endExp, endIndex + 1, &endMatch);
+            endIndex = text.indexOf (regexEndExp, endIndex + 1, &endMatch);
 
-        int badIndex = -1;
         int len;
         if (endIndex == -1)
         {
@@ -374,28 +381,10 @@ void Highlighter::multiLineRegex(const QString &text, const int index)
         {
             len = endIndex - startIndex
                   + endMatch.capturedLength();
-            /* a multi-line comment start sign may have become invalid */
-            if (!commentStartExpression.pattern().isEmpty())
-            {
-                QRegularExpression commentExp ("^" + commentStartExpression.pattern());
-                if (text.mid (endIndex).indexOf (commentExp) == 0)
-                {
-                    badIndex = endIndex + endMatch.capturedLength();
-                    setFormat (badIndex, text.length() - badIndex, neutralFormat);
-                    setCurrentBlockState (0); // restore the neutral state
-                }
-            }
         }
         setFormat (startIndex, len, regexFormat);
 
-        startIndex = text.indexOf (startExp, startIndex + len, &startMatch);
-
-        if (badIndex >= 0)
-        { // reformat from here, as in highlightBlock()
-            singleLineComment (text, badIndex);
-            multiLineQuote (text, badIndex); // always returns false
-            multiLineComment (text, badIndex, commentStartExpression, commentEndExpression, commentState, commentFormat);
-        }
+        startIndex = text.indexOf (regexStartExp, startIndex + len, &startMatch);
 
         /* skip comments and quotations again */
         fi = format (startIndex);
@@ -404,7 +393,7 @@ void Highlighter::multiLineRegex(const QString &text, const int index)
                    || fi == commentFormat || fi == urlFormat
                    || fi == quoteFormat || fi == altQuoteFormat || fi == urlInsideQuoteFormat))
         {
-            startIndex = text.indexOf (startExp, startIndex + 1, &startMatch);
+            startIndex = text.indexOf (regexStartExp, startIndex + 1, &startMatch);
             fi = format (startIndex);
         }
     }

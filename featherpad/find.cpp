@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2019 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2022 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -24,7 +24,7 @@
 namespace FeatherPad {
 
 /* This order is preserved everywhere for selections:
-   current line -> replacement -> found matches -> selection highlights -> bracket matches */
+   current line -> replacement -> found matches -> selection highlights -> column highlight -> bracket matches */
 
 void FPwin::find (bool forward)
 {
@@ -54,6 +54,7 @@ void FPwin::find (bool forward)
         if (ui->actionLineNumbers->isChecked() || ui->spinBox->isVisible())
             es.prepend (textEdit->currentLineSelection());
         es.append (textEdit->getBlueSel());
+        es.append (textEdit->getColSel());
         es.append (textEdit->getRedSel());
         textEdit->setExtraSelections (es);
         return;
@@ -106,16 +107,10 @@ void FPwin::hlight() const
     const QString txt = textEdit->getSearchedText();
     if (txt.isEmpty()) return;
 
-    QTextDocument::FindFlags searchFlags = getSearchFlags();
-
     /* prepend green highlights */
     QList<QTextEdit::ExtraSelection> es = textEdit->getGreenSel();
-    QColor color = QColor (textEdit->hasDarkScheme() ? QColor (255, 255, 0,
-                                                               /* a quadratic equation for darkValue -> opacity: 0 -> 90,  27 -> 75, 50 -> 65 */
-                                                               static_cast<int>(static_cast<qreal>(textEdit->getDarkValue() * (textEdit->getDarkValue() - 257)) / static_cast<qreal>(414)) + 90)
-                                                     : Qt::yellow);
-    QTextCursor found;
-    /* first put a start cursor at the top left edge... */
+
+    /* first put the start cursor at the top left corner... */
     QPoint Point (0, 0);
     QTextCursor start = textEdit->cursorForPosition (Point);
     /* ... then move it backward by the search text length */
@@ -124,21 +119,28 @@ void FPwin::hlight() const
         start.setPosition (startPos);
     else
         start.setPosition (0);
-    /* get the visible text to check if the search string is inside it */
+
+    /* put the end cursor at the bottom right corner... */
     Point = QPoint (textEdit->geometry().width(), textEdit->geometry().height());
     QTextCursor end = textEdit->cursorForPosition (Point);
     int endLimit = end.anchor();
+    /* ... and move it forward by the text length */
     int endPos = end.position() + (!tabPage->matchRegex() ? txt.length() : 0);
     end.movePosition (QTextCursor::End);
     if (endPos <= end.position())
         end.setPosition (endPos);
-    QTextCursor visCur = start;
-    visCur.setPosition (end.position(), QTextCursor::KeepAnchor);
-    const QString str = visCur.selection().toPlainText(); // '\n' is included in this way
-    Qt::CaseSensitivity cs = tabPage->matchCase() ? Qt::CaseSensitive : Qt::CaseInsensitive;
-    if (tabPage->matchRegex() || str.contains (txt, cs)) // don't waste time if the searched text isn't visible
+
+    /* don't waste time if the searched text is larger that the available space */
+    if (tabPage->matchRegex() || end.position() - start.position() >= txt.length())
     {
-        while (!(found = textEdit->finding (txt, start, searchFlags,  tabPage->matchRegex(), endLimit)).isNull())
+        QColor color = QColor (textEdit->hasDarkScheme()
+                                   ? QColor (255, 255, 0,
+                                             /* a quadratic equation for darkValue -> opacity: 0 -> 90,  27 -> 75, 50 -> 65 */
+                                             static_cast<int>(static_cast<double>(textEdit->getDarkValue() * (textEdit->getDarkValue() - 257)) / 414) + 90)
+                                   : Qt::yellow);
+        QTextDocument::FindFlags searchFlags = getSearchFlags();
+        QTextCursor found;
+        while (!(found = textEdit->finding (txt, start, searchFlags, tabPage->matchRegex(), endLimit)).isNull())
         {
             QTextEdit::ExtraSelection extra;
             extra.format.setBackground (color);
@@ -154,6 +156,7 @@ void FPwin::hlight() const
         es.prepend (textEdit->currentLineSelection());
     /* append blue and red highlights */
     es.append (textEdit->getBlueSel());
+    es.append (textEdit->getColSel());
     es.append (textEdit->getRedSel());
     textEdit->setExtraSelections (es);
 }

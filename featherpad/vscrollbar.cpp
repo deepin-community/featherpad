@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2019 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2021 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -18,57 +18,38 @@
  */
 
 #include "vscrollbar.h"
-#include <QApplication>
-#if (QT_VERSION != QT_VERSION_CHECK(5,14,0))
-#include <QEvent>
-#endif
+
+#include <algorithm>
+#include <cmath>
 
 namespace FeatherPad {
 
-VScrollBar::VScrollBar (QWidget *parent)
-    : QScrollBar (parent)
-{
-    defaultWheelSpeed = QApplication::wheelScrollLines();
-    if (defaultWheelSpeed == 0) // in case something's wrong
-        defaultWheelSpeed = 3;
-}
+VScrollBar::VScrollBar (QWidget *parent) : QScrollBar (parent) {}
 /*************************/
-bool VScrollBar::event (QEvent *event)
+void VScrollBar::wheelEvent (QWheelEvent *event)
 {
-    if (event->type() == QEvent::Enter)
-        QApplication::setWheelScrollLines (102);
-    else if (event->type() == QEvent::Leave
-             /* Apparently, the Qt5 hover bug is never going to be fixed! */
-             || (QApplication::wheelScrollLines() != defaultWheelSpeed
-                 && !rect().contains (mapFromGlobal (QCursor::pos()))))
+    if (!underMouse()
+        || !event->spontaneous()
+        || event->source() != Qt::MouseEventNotSynthesized
+        /* Apparently, Qt's hover bug is never going to be fixed! */
+        || !rect().contains (mapFromGlobal (QCursor::pos())))
     {
-        QApplication::setWheelScrollLines (defaultWheelSpeed);
+        QScrollBar::wheelEvent (event);
+        return;
     }
+    QPoint anglePoint = event->angleDelta();
+    int delta = std::abs (anglePoint.x()) > std::abs (anglePoint.y()) ? anglePoint.x()
+                                                                      : anglePoint.y();
 
-    return QScrollBar::event (event);
+    /* wait until the angle delta reaches that of an ordinary mouse wheel */
+    static int _effectiveDelta = 0;
+    _effectiveDelta += delta;
+    if (std::abs (_effectiveDelta) < 120)
+        return;
+
+    int step = (_effectiveDelta < 0 ? 1 : -1) * std::max (pageStep() / ((event->modifiers() & Qt::ShiftModifier) ? 2 : 1), 1);
+    _effectiveDelta = 0;
+    setSliderPosition (sliderPosition() + step);
 }
-/*************************/
-#if (QT_VERSION == QT_VERSION_CHECK(5,14,0))
-void HScrollBar::wheelEvent (QWheelEvent *event) {
-    if (event->angleDelta().x() == 0)
-    {
-        int deltaY = event->angleDelta().y();
-        if (deltaY != 0)
-        {
-            QWheelEvent e (event->pos(),
-                           event->globalPos(),
-                           event->pixelDelta(),
-                           QPoint (deltaY, 0),
-                           event->buttons(),
-                           event->modifiers(),
-                           event->phase(),
-                           event->source());
-            QCoreApplication::sendEvent (this, &e);
-            return;
-        }
-    }
-    QScrollBar::wheelEvent (event);
-}
-#endif
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2020 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2022 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -50,9 +50,13 @@ SessionDialog::SessionDialog (QWidget *parent):QDialog (parent), ui (new Ui::Ses
     if (allItems_.count() > 0)
     {
         /* use ListWidgetItem to add items with a natural sorting */
-        for (const auto &irem : qAsConst (allItems_))
+#if (QT_VERSION >= QT_VERSION_CHECK(6,6,0))
+        for (const auto &item : std::as_const (allItems_))
+#else
+        for (const auto &item : qAsConst (allItems_))
+#endif
         {
-            ListWidgetItem *lwi = new ListWidgetItem (irem, ui->listWidget);
+            ListWidgetItem *lwi = new ListWidgetItem (item, ui->listWidget);
             ui->listWidget->addItem (lwi);
         }
         ui->listWidget->setCurrentRow (0);
@@ -130,7 +134,7 @@ void SessionDialog::showContextMenu (const QPoint &p)
     if (!index.isValid()) return;
     ui->listWidget->selectionModel()->select (index, QItemSelectionModel::ClearAndSelect);
 
-    QMenu menu;
+    QMenu menu (this); // "this" is for Wayland, when the window isn't active
     menu.addAction (ui->actionOpen);
     menu.addAction (ui->actionRemove);
     menu.addSeparator();
@@ -510,9 +514,9 @@ void SessionDialog::reallyApplyFilter()
     ui->listWidget->clear();
     QRegularExpression exp (ui->filterLineEdit->text(), QRegularExpression::CaseInsensitiveOption);
     const QStringList filtered = allItems_.filter (exp);
-    for (const auto &irem : filtered)
+    for (const auto &item : filtered)
     {
-        ListWidgetItem *lwi = new ListWidgetItem (irem, ui->listWidget);
+        ListWidgetItem *lwi = new ListWidgetItem (item, ui->listWidget);
         ui->listWidget->addItem (lwi);
     }
     /* finally, restore the selection as far as possible */

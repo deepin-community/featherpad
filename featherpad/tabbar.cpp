@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2019 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2024 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -28,19 +28,25 @@
 
 namespace FeatherPad {
 
+const char *TabBar::tabDropped = "_fpad_tab_dropped";
+
 TabBar::TabBar (QWidget *parent)
     : QTabBar (parent)
 {
-    setMouseTracking (true);
-    setElideMode (Qt::ElideMiddle); // works with minimumTabSizeHint()
     hideSingle_ = false;
     locked_ = false;
-    dragStarted_ = false; // not needed
+    dragStarted_ = false;
     noTabDND_ = false;
+
+    setMouseTracking (true);
+    setElideMode (Qt::ElideMiddle); // works with minimumTabSizeHint()
 }
 /*************************/
 void TabBar::mousePressEvent (QMouseEvent *event)
 {
+    dragStarted_ = false;
+    dragStartPosition_ = QPoint();
+
     if (locked_)
     {
         event->ignore();
@@ -49,21 +55,22 @@ void TabBar::mousePressEvent (QMouseEvent *event)
     QTabBar::mousePressEvent (event);
 
     if (event->button() == Qt::LeftButton) {
-        if (tabAt (event->pos()) > -1)
-            dragStartPosition_ = event->pos();
+        if (tabAt (event->position().toPoint()) > -1)
+            dragStartPosition_ = event->position().toPoint();
         else if (event->type() == QEvent::MouseButtonDblClick && count() > 0)
             emit addEmptyTab();
     }
-
-    dragStarted_ = false;
 }
 /*************************/
 void TabBar::mouseReleaseEvent (QMouseEvent *event)
 {
+    dragStarted_ = false;
+    dragStartPosition_ = QPoint();
+
     QTabBar::mouseReleaseEvent (event);
     if (event->button() == Qt::MiddleButton)
     {
-        int index = tabAt (event->pos());
+        int index = tabAt (event->position().toPoint());
         if (index > -1)
             emit tabCloseRequested (index);
         else
@@ -73,8 +80,9 @@ void TabBar::mouseReleaseEvent (QMouseEvent *event)
 /*************************/
 void TabBar::mouseMoveEvent (QMouseEvent *event)
 {
-    if (!dragStartPosition_.isNull()
-        && (event->pos() - dragStartPosition_).manhattanLength() >= QApplication::startDragDistance())
+    if (!dragStarted_ && !dragStartPosition_.isNull()
+        && (event->position().toPoint()
+            - dragStartPosition_).manhattanLength() >= QApplication::startDragDistance())
     {
       dragStarted_ = true;
     }
@@ -82,7 +90,7 @@ void TabBar::mouseMoveEvent (QMouseEvent *event)
     if (!noTabDND_
         && (event->buttons() & Qt::LeftButton)
         && dragStarted_
-        && !window()->geometry().contains (event->globalPos()))
+        && !window()->geometry().contains (event->globalPosition().toPoint()))
     {
         int index = currentIndex();
         if (index == -1)
@@ -91,9 +99,21 @@ void TabBar::mouseMoveEvent (QMouseEvent *event)
             return;
         }
 
+        /*
+           NOTE:
+
+           To be on the safe side (especially under Wayland), we detach or drop the tab
+           only after finishing the DND; see "FPwin::dropEvent()" and the queued
+           connection of "tabDetached()" in "fpwin.cpp".
+
+           Also, it's important to release the mouse after DND but before tab removal;
+           otherwise, the tabbar might not be updated properly. That's done in
+           "FPwin::detachTab" and "FPwin::dropTab".
+        */
+
         QPointer<QDrag> drag = new QDrag (this);
         QMimeData *mimeData = new QMimeData;
-        QByteArray array = (QString::number(window()->winId()) + "+" + QString::number(index)).toUtf8();
+        QByteArray array = QString::number (index).toUtf8();
         mimeData->setData ("application/featherpad-tab", array);
         drag->setMimeData (mimeData);
         QPixmap px = QIcon (":icons/tab.svg").pixmap (22, 22);
@@ -103,30 +123,39 @@ void TabBar::mouseMoveEvent (QMouseEvent *event)
         Qt::DropAction dragged = drag->exec (Qt::MoveAction);
         if (dragged != Qt::MoveAction)
         {
-            /* A tab is dropped outside all windows. WARNING: Under Enlightenment,
-               this may be Qt::CopyAction, not IgnoreAction (an E bug). */
+            /* The drop hasn't been accepted (by any FeatherPad window).
+               The tab will be detached if there's more than one tab. */
             if (N > 1)
                 emit tabDetached();
             else
                 finishMouseMoveEvent();
         }
-        else // a tab is dropped into another window
+        else
         {
-            /* WARNING: Theoretically, only FeatherPad should accept its tab drops
-               but another app (like Dolphin) may incorrectly accept any drop. So,
-               if no tab is removed here, we release the mouse as a workaround. */
-            if (count() == N)
-                releaseMouse();
+            /* WARNING: Since another app can also accept this drop, we check
+               the object property "_fpad_tab_dropped" (set by "FPwin::dropEvent")
+               and detach the tab if it's missing. */
+            if (property (TabBar::tabDropped).toBool())
+                setProperty (TabBar::tabDropped, QVariant()); // reset
+            else
+            {
+                if (N > 1)
+                    emit tabDetached();
+                else
+                    finishMouseMoveEvent();
+            }
         }
         event->accept();
         drag->deleteLater();
     }
     else
-    {
+    { // "this" is for Wayland, when the window isn't active
         QTabBar::mouseMoveEvent (event);
-        int index = tabAt (event->pos());
+        int index = tabAt (event->position().toPoint());
         if (index > -1)
-            QToolTip::showText (event->globalPos(), tabToolTip (index));
+            /* WARNING: For tabbars, event->globalPosition() may return a totally
+                        wrong position with Qt6. */
+            QToolTip::showText (QCursor::pos(), tabToolTip (index), this);
         else
             QToolTip::hideText();
     }
@@ -172,13 +201,24 @@ void TabBar::tabInserted (int/* index*/)
 /*************************/
 void TabBar::finishMouseMoveEvent()
 {
-    QMouseEvent finishingEvent (QEvent::MouseMove, QPoint(), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    dragStarted_ = false;
+    dragStartPosition_ = QPoint();
+
+    QMouseEvent finishingEvent (QEvent::MouseMove, QPointF(),
+#if (QT_VERSION >= QT_VERSION_CHECK(6,4,0))
+                                QCursor::pos(),
+#endif
+                                Qt::NoButton, Qt::NoButton, Qt::NoModifier);
     mouseMoveEvent (&finishingEvent);
 }
 /*************************/
 void TabBar::releaseMouse()
 {
-    QMouseEvent releasingEvent (QEvent::MouseButtonRelease, QPoint(), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QMouseEvent releasingEvent (QEvent::MouseButtonRelease, QPointF(),
+#if (QT_VERSION >= QT_VERSION_CHECK(6,4,0))
+                                QCursor::pos(),
+#endif
+                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
     mouseReleaseEvent (&releasingEvent);
 }
 /*************************/

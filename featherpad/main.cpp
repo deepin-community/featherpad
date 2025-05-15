@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2020 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2025 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -18,34 +18,35 @@
  */
 
 #include <QDir>
+#include <QTextStream>
 #include "singleton.h"
+#include "signalDaemon.h"
 
 #ifdef HAS_X11
 #include "x11.h"
 #endif
 
-#include <signal.h>
 #include <QLibraryInfo>
 #include <QTranslator>
-
-void handleQuitSignals (const std::vector<int>& quitSignals)
-{
-    auto handler = [](int sig) ->void {
-        Q_UNUSED (sig)
-        //printf("\nUser signal = %d.\n", sig);
-        QCoreApplication::quit();
-    };
-
-    for (int sig : quitSignals)
-        signal (sig, handler); // handle these signals by quitting gracefully
-}
 
 int main (int argc, char **argv)
 {
     const QString name = "FeatherPad";
-    const QString version = "0.17.1";
-    const QString option = QString::fromUtf8 (argv[1]);
-    if (option == "--help" || option == "-h")
+    const QString version = "1.6.1";
+
+    FeatherPad::FPsingleton singleton (argc, argv);
+    singleton.setApplicationName (name);
+    singleton.setApplicationVersion (version);
+
+    QStringList args = singleton.arguments();
+    if (!args.isEmpty())
+        args.removeFirst();
+
+    QString firstArg;
+    if (!args.isEmpty())
+        firstArg = args.at (0);
+
+    if (firstArg == "--help" || firstArg == "-h")
     {
         QTextStream out (stdout);
         out << "FeatherPad - Lightweight Qt text editor\n"\
@@ -66,84 +67,70 @@ int main (int argc, char **argv)
                "       has its separate, single window.\n"\
                "NOTE3: --win or -w can come before or after cursor option, with a space\n"\
                "       in between."
-#if (QT_VERSION >= QT_VERSION_CHECK(5,15,0))
             << Qt::endl;
-#else
-            << endl;
-#endif
         return 0;
     }
-    else if (option == "--version" || option == "-v")
+    else if (firstArg == "--version" || firstArg == "-v")
     {
         QTextStream out (stdout);
-        out << name << " " << version
-#if (QT_VERSION >= QT_VERSION_CHECK(5,15,0))
-            << Qt::endl;
-#else
-            << endl;
-#endif
+        out << name << " " << version << Qt::endl;
         return 0;
     }
 
-    FeatherPad::FPsingleton singleton (argc, argv, option == "--standalone" || option == "-s");
-    singleton.setApplicationName (name);
-    singleton.setApplicationVersion (version);
+    singleton.init (firstArg == "--standalone" || firstArg == "-s");
 
-    handleQuitSignals ({SIGQUIT, SIGINT, SIGTERM, SIGHUP}); // -> https://en.wikipedia.org/wiki/Unix_signal
-
-    singleton.setAttribute(Qt::AA_UseHighDpiPixmaps, true);
-
+    // with QLocale::system().name(), X and X_Y may be the same in tests
     QStringList langs (QLocale::system().uiLanguages());
-    QString lang; // bcp47Name() doesn't work under vbox
+    QString lang;
     if (!langs.isEmpty())
         lang = langs.first().replace ('-', '_');
 
     QTranslator qtTranslator;
-    if (!qtTranslator.load ("qt_" + lang, QLibraryInfo::location (QLibraryInfo::TranslationsPath)))
+    if (qtTranslator.load ("qt_" + lang, QLibraryInfo::path (QLibraryInfo::TranslationsPath)))
+        singleton.installTranslator (&qtTranslator);
+    else if (!langs.isEmpty())
     { // shouldn't be needed
-        if (!langs.isEmpty())
-        {
-            lang = langs.first().split (QLatin1Char ('_')).first();
-            qtTranslator.load ("qt_" + lang, QLibraryInfo::location (QLibraryInfo::TranslationsPath));
-        }
+        lang = langs.first().split (QLatin1Char ('_')).first();
+        if (qtTranslator.load ("qt_" + lang, QLibraryInfo::path (QLibraryInfo::TranslationsPath)))
+            singleton.installTranslator (&qtTranslator);
     }
-    singleton.installTranslator (&qtTranslator);
 
     QTranslator FPTranslator;
 #if defined(Q_OS_HAIKU)
-    FPTranslator.load ("featherpad_" + lang, QStringLiteral (DATADIR) + "/../translations");
+    if (FPTranslator.load ("featherpad_" + lang, QStringLiteral (DATADIR) + "/../translations"))
 #elif defined(Q_OS_MAC)
-    FPTranslator.load ("featherpad_" + lang, singleton.applicationDirPath() + QStringLiteral ("/../Resources/translations/"));
+    if (FPTranslator.load ("featherpad_" + lang, singleton.applicationDirPath() + QStringLiteral ("/../Resources/translations/")))
 #else
-    FPTranslator.load ("featherpad_" + lang, QStringLiteral (DATADIR) + "/featherpad/translations");
+    if (FPTranslator.load ("featherpad_" + lang, QStringLiteral (DATADIR) + "/featherpad/translations"))
 #endif
-    singleton.installTranslator (&FPTranslator);
+    {
+        singleton.installTranslator (&FPTranslator);
+    }
 
-    QString info;
+    QStringList info;
 #ifdef HAS_X11
     int d = singleton.isX11() ? static_cast<int>(FeatherPad::fromDesktop()) : -1;
 #else
     int d = -1;
 #endif
-    info.setNum (d);
-    info += "\n\r"; // a string that can't be used in file names
-    info += QDir::currentPath();
-    info += "\n\r";
-    for (int i = 1; i < argc; ++i)
+    info << QString::number (d) << QDir::currentPath();
+    if (!args.isEmpty())
+        info << args;
+
+    if (!singleton.isPrimaryInstance())
     {
-        info += QString::fromUtf8 (argv[i]);
-        if (i < argc - 1)
-            info += "\n\r";
+        singleton.sendInfo (info); // is sent to the primary instance
+        return 0;
     }
 
-    // the slot is executed in the receiver's thread
-    if (singleton.sendMessage (info))
-        return 0;
+    // Handle SIGQUIT, SIGINT, SIGTERM and SIGHUP (-> https://en.wikipedia.org/wiki/Unix_signal).
+    FeatherPad::signalDaemon D;
+    D.watchUnixSignals();
+    QObject::connect (&D, &FeatherPad::signalDaemon::sigQUIT,
+                      &singleton, &FeatherPad::FPsingleton::quitSignalReceived);
 
     QObject::connect (&singleton, &QCoreApplication::aboutToQuit, &singleton, &FeatherPad::FPsingleton::quitting);
     singleton.firstWin (info);
-    QObject::connect (&singleton, &FeatherPad::FPsingleton::messageReceived,
-                      &singleton, &FeatherPad::FPsingleton::handleMessage);
 
     return singleton.exec();
 }

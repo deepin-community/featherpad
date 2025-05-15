@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2019 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2024 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -23,7 +23,7 @@
 #include <QMainWindow>
 #include <QActionGroup>
 #include <QElapsedTimer>
-#include "highlighter.h"
+#include "highlighter/highlighter.h"
 #include "textedit.h"
 #include "tabpage.h"
 #include "sidepane.h"
@@ -41,8 +41,10 @@ class FPwin : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit FPwin (QWidget *parent = nullptr, bool standalone = false);
+    explicit FPwin (QWidget *parent = nullptr);
     ~FPwin();
+
+    void cleanUpOnTerminating (Config &config, bool isLastWin);
 
     bool isScriptLang (const QString& lang) const;
 
@@ -69,7 +71,6 @@ public:
     void addCursorPosLabel();
     void addRemoveLangBtn (bool add);
 
-    void showCrashWarning();
     void showRootWarning();
     void updateCustomizableShortcuts (bool disable = false);
 
@@ -78,6 +79,8 @@ public:
     QHash<QAction*, QKeySequence> defaultShortcuts() const {
         return defaultShortcuts_;
     }
+
+    void menubarTitle (bool add = true, bool setTitle = false);
 
 signals:
     void finishedLoading();
@@ -112,7 +115,7 @@ private slots:
     void closeOtherPages();
     void fileOpen();
     void reload();
-    void enforceEncoding (QAction*);
+    void enforceEncoding (QAction *a);
     void cutText();
     void copyText();
     void pasteText();
@@ -123,7 +126,8 @@ private slots:
     void upperCase();
     void lowerCase();
     void startCase();
-    void enableSortLines();
+    void showingEditMenu();
+    void hidngEditMenu();
     void sortLines();
     void makeEditable();
     void undoing();
@@ -144,7 +148,7 @@ private slots:
     void toggleIndent();
     void replace();
     void replaceAll();
-    void closeReplaceDock (bool visible);
+    void dockVisibilityChanged (bool visible);
     void replaceDock();
     void resizeDock (bool topLevel);
     void jumpTo();
@@ -157,6 +161,7 @@ private slots:
     void zoomZero();
     void defaultSize();
     void focusView();
+    void focusSidePane();
     //void align();
     void manageSessions();
     void executeProcess();
@@ -192,6 +197,7 @@ private slots:
     void onPermissionDenied();
     void onOpeningUneditable();
     void onOpeningNonexistent();
+    void columnWarning();
     void autoSave();
     void pauseAutoSaving (bool pause);
     void enforceLang (QAction *action);
@@ -208,13 +214,14 @@ private:
       DISCARDED
     };
 
-    TabPage *createEmptyTab(bool setCurrent, bool allowNormalHighlighter = true);
+    TabPage* createEmptyTab(bool setCurrent, bool allowNormalHighlighter = true);
     bool hasAnotherDialog();
     void deleteTabPage (int tabIndex, bool saveToList = false, bool closeWithLastTab = true);
     void loadText (const QString& fileName, bool enforceEncod, bool reload,
                    int restoreCursor = 0, int posInLine = 0,
                    bool enforceUneditable = false, bool multiple = false);
     bool alreadyOpen (TabPage *tabPage) const;
+    void setWinTitle (const QString& title);
     void setTitle (const QString& fileName, int tabIndex = -1);
     DOCSTATE savePrompt (int tabIndex, bool noToAll,
                          int first = 0, int last = 0, bool closingWindow = false,
@@ -233,8 +240,9 @@ private:
     bool closePages (int first, int last, bool saveFilesList = false);
     void dragEnterEvent (QDragEnterEvent *event);
     void dropEvent (QDropEvent *event);
-    void dropTab (const QString& str);
+    void dropTab (const QString& str, QObject *source);
     void changeEvent (QEvent *event);
+    void showEvent (QShowEvent *event);
     bool event (QEvent *event);
     QTextDocument::FindFlags getSearchFlags() const;
     void enableWidgets (bool enable) const;
@@ -261,11 +269,11 @@ private:
     void updateGUIForSingleTab (bool single);
     void stealFocus (QWidget *w);
     void stealFocus();
+    void addRecentFile (const QString& file);
 
     QActionGroup *aGroup_;
     QString lastFile_; // The last opened or saved file (for file dialogs).
     QHash<QString, QVariant> lastWinFilesCur_; // The last window files and their cusrors (if restored).
-    QString txtReplace_; // The replacing text.
     int rightClicked_; // The index/row of the right-clicked tab/item.
     int loadingProcesses_; // The number of loading processes (used to prevent early closing).
     QMetaObject::Connection lambdaConnection_; // Captures a lambda connection to disconnect it later.
@@ -274,6 +282,7 @@ private:
     QHash<QString, QAction*> langs_; // All programming languages (to be enforced by the user).
     QHash<QAction*, QKeySequence> defaultShortcuts_;
     bool inactiveTabModified_; // The inactive tab is modified (e.g., when saving all files).
+    bool shownBefore_; // Needed for correct restoring of the position.
     // Auto-saving:
     QTimer *autoSaver_;
     QElapsedTimer autoSaverPause_;
@@ -281,8 +290,6 @@ private:
     // Needed with saving as root:
     bool locked_;
     bool closePreviousPages_;
-    // Only used internally:
-    bool standalone_;
 };
 
 }

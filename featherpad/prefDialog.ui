@@ -213,6 +213,38 @@ a menu button appears on the toolbar.</string>
                </widget>
               </item>
               <item>
+               <widget class="QCheckBox" name="menubarTitleBox">
+                <property name="toolTip">
+                 <string>Double clicking on the title toggles the maximized state.
+The title also has a right click menu when a file is opened.</string>
+                </property>
+                <property name="text">
+                 <string>Show window title on menubar</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QCheckBox" name="accelBox">
+                <property name="toolTip">
+                 <string>Menubar accelerators are activated by Alt
+and may interfere with customized shortcuts.</string>
+                </property>
+                <property name="text">
+                 <string>Disable menubar accelerators</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QCheckBox" name="iconBox">
+                <property name="toolTip">
+                 <string>Internal icons are used by default.</string>
+                </property>
+                <property name="text">
+                 <string>Use system icons where possible</string>
+                </property>
+               </widget>
+              </item>
+              <item>
                <widget class="QCheckBox" name="searchbarBox">
                 <property name="text">
                  <string>Hide search &amp;bar by default</string>
@@ -622,7 +654,7 @@ when the syntax is highlighted.</string>
               <item>
                <widget class="QCheckBox" name="endingsBox">
                 <property name="text">
-                 <string>Also show line and document ends</string>
+                 <string>Show line and document ends</string>
                 </property>
                </widget>
               </item>
@@ -749,16 +781,21 @@ Needs window reopening to take effect.</string>
                </layout>
               </item>
               <item>
+               <widget class="QCheckBox" name="marginBox">
+                <property name="text">
+                 <string>Add a small margin around text</string>
+                </property>
+               </widget>
+              </item>
+              <item>
                <layout class="QHBoxLayout" name="horizontalLayout_8">
                 <item>
                  <widget class="QLabel" name="dateLabel">
                   <property name="toolTip">
                    <string>Used for pasting the date and time.
+Leave empty for the system default.
 
-Takes effect after closing this dialog.
-
-Leave empty for:
-MMM dd, yyyy, hh:mm:ss</string>
+Takes effect after closing this dialog.</string>
                   </property>
                   <property name="text">
                    <string>Date and time format:</string>
@@ -769,11 +806,9 @@ MMM dd, yyyy, hh:mm:ss</string>
                  <widget class="QLineEdit" name="dateEdit">
                   <property name="toolTip">
                    <string>Used for pasting the date and time.
+Leave empty for the system default.
 
-Takes effect after closing this dialog.
-
-Leave empty for:
-MMM dd, yyyy, hh:mm:ss</string>
+Takes effect after closing this dialog.</string>
                   </property>
                   <property name="placeholderText">
                    <string notr="true">MMM dd, yyyy, hh:mm:ss</string>
@@ -987,7 +1022,7 @@ Needs application restart to take effect.</string>
                <number>0</number>
               </property>
               <property name="maximum">
-               <number>20</number>
+               <number>50</number>
               </property>
              </widget>
             </item>
@@ -1259,6 +1294,9 @@ be opened if they are pasted into FeatherPad.</string>
        <string>Shortcuts</string>
       </attribute>
       <layout class="QGridLayout" name="gridLayout_5">
+       <property name="bottomMargin">
+        <number>5</number>
+       </property>
        <item row="0" column="0">
         <widget class="QTableWidget" name="tableWidget">
          <property name="editTriggers">
@@ -1305,32 +1343,15 @@ be opened if they are pasted into FeatherPad.</string>
        <string>Syntax Colors</string>
       </attribute>
       <layout class="QGridLayout" name="gridLayout_2">
+       <property name="bottomMargin">
+        <number>5</number>
+       </property>
        <item row="0" column="0">
-        <widget class="QTableWidget" name="syntaxTableWidget">
-         <property name="alternatingRowColors">
-          <bool>true</bool>
-         </property>
-         <property name="selectionMode">
-          <enum>QAbstractItemView::SingleSelection</enum>
-         </property>
-         <attribute name="verticalHeaderVisible">
-          <bool>false</bool>
-         </attribute>
-         <column>
-          <property name="text">
-           <string>Element</string>
-          </property>
-         </column>
-         <column>
-          <property name="text">
-           <string>Text Color</string>
-          </property>
-         </column>
-        </widget>
-       </item>
-       <item row="1" column="0">
         <layout class="QHBoxLayout" name="horizontalLayout_16">
          <property name="spacing">
+          <number>5</number>
+         </property>
+         <property name="topMargin">
           <number>5</number>
          </property>
          <item>
@@ -1358,9 +1379,12 @@ be opened if they are pasted into FeatherPad.</string>
          </item>
         </layout>
        </item>
-       <item row="2" column="0">
+       <item row="1" column="0">
         <layout class="QHBoxLayout" name="horizontalLayout_17">
          <property name="spacing">
+          <number>5</number>
+         </property>
+         <property name="bottomMargin">
           <number>5</number>
          </property>
          <item>
@@ -1397,6 +1421,29 @@ be opened if they are pasted into FeatherPad.</string>
           </spacer>
          </item>
         </layout>
+       </item>
+       <item row="2" column="0">
+        <widget class="QTableWidget" name="syntaxTableWidget">
+         <property name="alternatingRowColors">
+          <bool>true</bool>
+         </property>
+         <property name="selectionMode">
+          <enum>QAbstractItemView::SingleSelection</enum>
+         </property>
+         <attribute name="verticalHeaderVisible">
+          <bool>false</bool>
+         </attribute>
+         <column>
+          <property name="text">
+           <string>Element</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Text Color</string>
+          </property>
+         </column>
+        </widget>
        </item>
        <item row="3" column="0" alignment="Qt::AlignRight">
         <widget class="QPushButton" name="defaultSyntaxButton">

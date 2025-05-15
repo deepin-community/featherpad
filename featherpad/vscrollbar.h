@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2019 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2021 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -21,9 +21,7 @@
 #define VSCROLLBAR_H
 
 #include <QScrollBar>
-#if (QT_VERSION == QT_VERSION_CHECK(5,14,0))
 #include <QWheelEvent>
-#endif
 
 namespace FeatherPad {
 
@@ -36,24 +34,8 @@ public:
     VScrollBar (QWidget *parent = nullptr);
 
 protected:
-    bool event (QEvent *event);
-
-private:
-    int defaultWheelSpeed;
+    void wheelEvent (QWheelEvent *event) override;
 };
-
-#if (QT_VERSION == QT_VERSION_CHECK(5,14,0))
-/* A (temporary) workaround for Qt's horizontal scrollbar bug. */
-class HScrollBar : public QScrollBar
-{
-    Q_OBJECT
-public:
-    HScrollBar (QWidget *parent = nullptr) : QScrollBar (parent) {};
-
-protected:
-    void wheelEvent (QWheelEvent *event);
-};
-#endif
 
 }
 

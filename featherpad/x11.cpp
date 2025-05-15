@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2014-2024 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -17,25 +17,31 @@
  * @license GPL-3.0+ <https://spdx.org/licenses/GPL-3.0+.html>
  */
 
-#include <QString>
+#include <QApplication>
 #include "x11.h"
 
 #include <X11/Xatom.h>
-#include <QX11Info>
 
 namespace FeatherPad {
 
-/*************************************************************
- *** These are all X11 related functions FeatherPad uses   ***
+/************************************************************
+ *** These are all X11 related functions FeatherPad uses, ***
  *** because Qt does not fetch enough information on X11. ***
- *************************************************************/
+ ************************************************************/
+
+static inline Display* getDisplay()
+{
+    if (auto x11NativeInterfce = qApp->nativeInterface<QNativeInterface::QX11Application>())
+        return x11NativeInterfce->display();
+    return nullptr;
+}
 
 // Get the current virtual desktop.
 long fromDesktop()
 {
     long res = -1;
 
-    Display  *disp = QX11Info::display();
+    Display *disp = getDisplay();
     if (!disp) return res;
 
     Atom actual_type;
@@ -68,7 +74,7 @@ long onWhichDesktop (Window window)
 {
     long res = -1;
 
-    Display *disp = QX11Info::display();
+    Display *disp = getDisplay();
     if (!disp) return res;
 
     Atom wm_desktop = XInternAtom (disp, "_NET_WM_DESKTOP", False);
@@ -94,14 +100,14 @@ long onWhichDesktop (Window window)
     return res;
 }
 /*************************/
-// The following two functions are adapted from x11tools.cpp,
+// The following two functions were adapted from x11tools.cpp,
 // belonging to kadu (https://github.com/vogel/kadu).
-// They were needed because isMinimized() may not detect
-// the shaded state with all WMs.
+// They are needed because QWidget::isMinimized()
+// may not detect the shaded state with all WMs.
 
 bool isWindowShaded (Window window)
 {
-    Display *disp = QX11Info::display();
+    Display *disp = getDisplay();
     if (!disp) return false;
 
     Atom property = XInternAtom (disp, "_NET_WM_STATE", False);
@@ -134,7 +140,7 @@ bool isWindowShaded (Window window)
 /*************************/
 void unshadeWindow (Window window)
 {
-    Display *disp = QX11Info::display();
+    Display *disp = getDisplay();
     if (!disp) return;
 
     Atom atomtype = XInternAtom (disp, "_NET_WM_STATE", False);

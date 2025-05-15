@@ -1,5 +1,5 @@
 /*
- * Copyright (C) Pedram Pourang (aka Tsu Jan) 2019 <tsujan2000@gmail.com>
+ * Copyright (C) Pedram Pourang (aka Tsu Jan) 2019-2024 <tsujan2000@gmail.com>
  *
  * FeatherPad is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -22,7 +22,7 @@
 
 #include <QString>
 #include <QHash>
-#include <QTextCodec>
+#include <QStringEncoder>
 
 class Hunspell;
 
@@ -48,7 +48,7 @@ public:
 private:
     Hunspell *hunspell_;
     QString userDictionary_;
-    QTextCodec *codec_;
+    QStringEncoder encoder_;
     QHash<QString, QString> corrections_;
 };
 

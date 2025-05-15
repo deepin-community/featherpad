@@ -1,3 +1,99 @@
+featherpad (1.6.1-1) unstable; urgency=medium
+
+  [ Macy Lin ]
+  * New upstream version 1.6.1.
+
+ -- Andrew Lee (李健秋) <ajqlee@debian.org>  Thu, 06 Mar 2025 21:09:47 +0100
+
+featherpad (1.6.0-1) unstable; urgency=medium
+
+  [ Macy Lin ]
+  * New upstream version 1.6.0
+  * debian/copyright: added myself.
+  * debian/featherpad-l10n.install: drop file not ship from upstream.
+  * debian/featherpad.install: drop file not ship from upstream.
+
+  [ Andrew Lee (李健秋) ]
+  * debian/copyright: update.
+
+ -- Andrew Lee (李健秋) <ajqlee@debian.org>  Sat, 01 Mar 2025 13:04:47 +0100
+
+featherpad (1.5.2-1) unstable; urgency=medium
+
+  * New upstream version 1.5.2
+  * Migrate to unstable.
+
+ -- ChangZhuo Chen (陳昌倬) <czchen@debian.org>  Thu, 12 Dec 2024 23:33:46 +0800
+
+featherpad (1.5.1-1~exp1) experimental; urgency=medium
+
+  [ Andrew Lee (李健秋) ]
+  * debian/lintian-overrides: added.
+
+  [ S. 7 ]
+  * New upstream version 1.5.1
+  * debian/control: bump Standards-Version to 4.7.0, no changes needed.
+  * debian/control: Update Build-Depends for Qt6
+  * debian/control: Update package description for Qt6
+  * debian/control: fix build-depends-on-obsolete-package lintian warning
+  * debian/changelog: Update changelog
+
+  [ Andrew Lee (李健秋) ]
+  * Clean up of group membership after 2nd calls.
+  * Run wrap-and-sort.
+  * debian/control: improve package descriptions.
+  * debian/salsa-ci.yml: build against to experimental.
+  * debian/copyright: update.
+
+ -- Andrew Lee (李健秋) <ajqlee@debian.org>  Wed, 02 Oct 2024 16:09:34 +0200
+
+featherpad (1.4.1-1) unstable; urgency=medium
+
+  [ Debian Janitor ]
+  * Set upstream metadata fields: Bug-Database, Bug-Submit.
+  * Remove obsolete field Name from debian/upstream/metadata (already present in
+    machine-readable debian/copyright).
+  * Set upstream metadata fields: Bug-Database, Bug-Submit.
+  * Remove obsolete field Name from debian/upstream/metadata (already
+    present in machine-readable debian/copyright).
+
+  [ Andrew Lee (李健秋) ]
+  * New upstream version 1.4.1
+  * debian/control: update team address.
+  * debian/copyright: update.
+  * debian/upstream/metadata: correct the git Repository url as itʼs
+    different from Repository-Browse.
+  * debian/salsa-ci.yml: added.
+
+ -- Andrew Lee (李健秋) <ajqlee@debian.org>  Wed, 06 Sep 2023 14:03:43 +0200
+
+featherpad (1.3.5-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- ChangZhuo Chen (陳昌倬) <czchen@debian.org>  Tue, 10 Jan 2023 22:07:22 +0800
+
+featherpad (1.3.4-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Bump Standards-Version to 4.6.2:
+    * Add Rules-Requires-Root: no.
+  * Add ChangZhuo Chen (陳昌倬) as uploader.
+  * Update d/watch for GitHub.
+  * Remove unnecessary -Wl,--as-needed in d/rules.
+  * Remove unnecessary --fail-missing in d/rules.
+  * Reformat and sort d/control.
+  * Sort d/copyright
+
+ -- ChangZhuo Chen (陳昌倬) <czchen@debian.org>  Sun, 25 Dec 2022 03:33:11 +0800
+
+featherpad (1.0.1-0.1) unstable; urgency=medium
+
+  * Non-maintainer upload
+  * New upstream release (Closes: #998188).
+
+ -- S. 7 <severusseptimius7@gmail.com>  Sat, 30 Oct 2021 05:19:55 -0400
+
 featherpad (0.17.1-1) unstable; urgency=medium
 
   * New upstream release.
